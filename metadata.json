@@ -1,0 +1,6 @@
+{
+  "name": "TALAL PRO",
+  "description": "تطبيق إدارة ومراقبة راوترات ميكروتيك وشبكات الإنترنت المتكاملة",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

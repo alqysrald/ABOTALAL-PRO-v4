@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "810268644039",
+    "project_id": "talal-pro",
+    "storage_bucket": "talal-pro.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:810268644039:android:23f2234ddb76d65691e4e2",
+        "android_client_info": {
+          "package_name": "com.talalpro.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAnpe-fO_qdS-1acHvmKMkz8DAEvHXoQ28"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
