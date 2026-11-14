@@ -90,6 +90,9 @@ class NetworkRepository(
     fun getTelegramConfig(userId: String): Flow<TelegramConfigEntity?> =
         telegramConfigDao.getTelegramConfigForUser(userId)
 
+    fun getAllCardTemplates(userId: String): Flow<List<CardTemplateEntity>> =
+        cardTemplateDao.getAllTemplates(userId)
+
     fun getCardTemplates(systemType: String, userId: String): Flow<List<CardTemplateEntity>> =
         cardTemplateDao.getTemplatesForSystem(userId, systemType)
 
@@ -97,10 +100,13 @@ class NetworkRepository(
         cardTemplateDao.getTemplateForProfile(userId, systemType, profileName)
 
     suspend fun saveCardTemplate(template: CardTemplateEntity): Long =
-        cardTemplateDao.saveTemplate(template)
+        cardTemplateDao.saveTemplate(template.copy(updatedAt = System.currentTimeMillis()))
 
     suspend fun deleteCardTemplate(template: CardTemplateEntity) =
         cardTemplateDao.deleteTemplate(template)
+
+    suspend fun deleteCardTemplateById(templateId: Long) =
+        cardTemplateDao.deleteTemplateById(templateId)
 
     private val prefs = appContext.getSharedPreferences("talal_pro_prefs", Context.MODE_PRIVATE)
 
@@ -459,10 +465,14 @@ class NetworkRepository(
     suspend fun syncUserManager(router: RouterEntity): Boolean {
         return try {
             val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+            val connCheck = client.testConnection()
+            if (!connCheck.isSuccess) return false
+
             val usersRaw = client.getUserManagerUsers()
             val profilesRaw = client.getUserManagerProfiles()
 
             userManagerDao.clearUsersForRouter(router.id, router.userId)
+            userManagerDao.clearProfilesForRouter(router.id, router.userId)
 
             val users = usersRaw.map { map ->
                 UserManagerUserEntity(
@@ -482,12 +492,13 @@ class NetworkRepository(
             }
             userManagerDao.insertUsers(users)
 
-            val profiles = profilesRaw.map { map ->
-                UserManagerProfileEntity(
+            val profiles = profilesRaw.mapNotNull { map ->
+                val pName = map["name"]?.trim() ?: ""
+                if (pName.isBlank()) null else UserManagerProfileEntity(
                     userId = router.userId,
                     routerId = router.id,
-                    name = map["name"] ?: "profile",
-                    nameForUsers = map["name-for-users"] ?: map["name"] ?: "",
+                    name = pName,
+                    nameForUsers = map["name-for-users"] ?: pName,
                     price = map["price"] ?: "0",
                     validity = map["validity"] ?: "30d",
                     rateLimitRx = map["rate-limit-rx"] ?: "2M",
@@ -622,12 +633,16 @@ class NetworkRepository(
     suspend fun syncHotspot(router: RouterEntity): Boolean {
         return try {
             val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+            val connCheck = client.testConnection()
+            if (!connCheck.isSuccess) return false
+
             val usersRaw = client.getHotspotUsers()
             val activeRaw = client.getHotspotActiveSessions()
             val profilesRaw = client.getHotspotProfiles()
 
             hotspotDao.clearHotspotUsersForRouter(router.id, router.userId)
             hotspotDao.clearActiveSessions(router.id, router.userId)
+            hotspotDao.clearProfilesForRouter(router.id, router.userId)
 
             val activeUsersSet = activeRaw.mapNotNull { it["user"] }.toSet()
 
@@ -669,11 +684,12 @@ class NetworkRepository(
             }
             hotspotDao.insertActiveSessions(sessions)
 
-            val profiles = profilesRaw.map { map ->
-                HotspotProfileEntity(
+            val profiles = profilesRaw.mapNotNull { map ->
+                val pName = map["name"]?.trim() ?: ""
+                if (pName.isBlank()) null else HotspotProfileEntity(
                     userId = router.userId,
                     routerId = router.id,
-                    name = map["name"] ?: "default",
+                    name = pName,
                     rateLimit = map["rate-limit"] ?: "2M/4M",
                     sharedUsers = map["shared-users"]?.toIntOrNull() ?: 1,
                     sessionTimeout = map["session-timeout"] ?: "0s",

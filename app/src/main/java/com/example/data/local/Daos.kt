@@ -154,6 +154,9 @@ interface UserManagerDao {
 
     @Delete
     suspend fun deleteProfile(profile: UserManagerProfileEntity)
+
+    @Query("DELETE FROM user_manager_profiles WHERE routerId = :routerId AND (userId = :userId OR :userId = '')")
+    suspend fun clearProfilesForRouter(routerId: Long, userId: String)
 }
 
 // ================= HOTSPOT DAO =================
@@ -198,6 +201,9 @@ interface HotspotDao {
 
     @Delete
     suspend fun deleteHotspotProfile(profile: HotspotProfileEntity)
+
+    @Query("DELETE FROM hotspot_profiles WHERE routerId = :routerId AND (userId = :userId OR :userId = '')")
+    suspend fun clearProfilesForRouter(routerId: Long, userId: String)
 }
 
 // ================= TELEGRAM CONFIG DAO =================
@@ -261,7 +267,10 @@ interface CustomTelegramButtonDao {
 
 @Dao
 interface CardTemplateDao {
-    @Query("SELECT * FROM card_templates WHERE (userId = :userId OR :userId = '') AND systemType = :systemType")
+    @Query("SELECT * FROM card_templates WHERE (userId = :userId OR :userId = '') ORDER BY updatedAt DESC")
+    fun getAllTemplates(userId: String): Flow<List<CardTemplateEntity>>
+
+    @Query("SELECT * FROM card_templates WHERE (userId = :userId OR :userId = '') AND systemType = :systemType ORDER BY updatedAt DESC")
     fun getTemplatesForSystem(userId: String, systemType: String): Flow<List<CardTemplateEntity>>
 
     @Query("SELECT * FROM card_templates WHERE (userId = :userId OR :userId = '') AND systemType = :systemType AND profileName = :profileName LIMIT 1")
@@ -275,4 +284,7 @@ interface CardTemplateDao {
 
     @Delete
     suspend fun deleteTemplate(template: CardTemplateEntity)
+
+    @Query("DELETE FROM card_templates WHERE id = :templateId")
+    suspend fun deleteTemplateById(templateId: Long)
 }

@@ -19,13 +19,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.model.*
 import com.example.ui.TalalProViewModel
+import com.example.ui.components.A4SheetPreviewDialog
 import com.example.ui.theme.*
+import com.example.ui.utils.CardPdfGenerator
 
 enum class HotspotTab(val title: String) {
     USERS("مستخدمي الهوتسبوت"),
@@ -46,6 +50,8 @@ fun HotspotScreen(
     val activeSessions by viewModel.hotspotActiveSessions.collectAsState()
     val profiles by viewModel.hotspotProfiles.collectAsState()
     val isSyncing by viewModel.isSyncingHotspot.collectAsState()
+    val cardTemplates by viewModel.cardTemplates.collectAsState()
+    val lastGeneratedBatch by viewModel.lastGeneratedHotspotBatch.collectAsState()
 
     var currentTab by remember { mutableStateOf(HotspotTab.USERS) }
     var searchQuery by remember { mutableStateOf("") }
@@ -262,8 +268,10 @@ fun HotspotScreen(
                         HotspotGeneratorContent(
                             router = r,
                             profiles = profiles,
-                            onGenerate = { prefix, count, profile, len, uptime, bytes ->
-                                viewModel.generateBatchHotspotCards(r, prefix, count, profile, len, uptime, bytes)
+                            cardTemplates = cardTemplates,
+                            lastGeneratedBatch = lastGeneratedBatch,
+                            onGenerate = { prefix, count, profile, len, uptime, bytes, priceLabel ->
+                                viewModel.generateBatchHotspotCards(r, prefix, count, profile, len, uptime, bytes, priceLabel)
                             }
                         )
                     } ?: Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -710,20 +718,152 @@ private fun HotspotProfilesContent(profiles: List<HotspotProfileEntity>) {
 private fun HotspotGeneratorContent(
     router: RouterEntity,
     profiles: List<HotspotProfileEntity>,
-    onGenerate: (prefix: String, count: Int, profile: String, len: Int, uptime: String, bytes: String) -> Unit
+    cardTemplates: List<CardTemplateEntity>,
+    lastGeneratedBatch: List<GeneratedCardPrintItem>,
+    onGenerate: (prefix: String, count: Int, profile: String, len: Int, uptime: String, bytes: String, priceLabel: String) -> Unit
 ) {
+    val context = LocalContext.current
+    var selectedTemplate by remember(cardTemplates) {
+        mutableStateOf(
+            cardTemplates.firstOrNull { it.linkedHotspotProfile.isNotBlank() }
+                ?: cardTemplates.firstOrNull()
+        )
+    }
+    var templateMenuExpanded by remember { mutableStateOf(false) }
+    var profileMenuExpanded by remember { mutableStateOf(false) }
+    var showA4Preview by remember { mutableStateOf(false) }
+
     var prefix by remember { mutableStateOf("1") }
-    var countText by remember { mutableStateOf("50") }
-    var lengthText by remember { mutableStateOf("6") }
-    var selectedProfile by remember { mutableStateOf(profiles.firstOrNull()?.name ?: "default") }
+    var countText by remember { mutableStateOf((selectedTemplate?.cardsCount ?: 51).toString()) }
+    var lengthText by remember { mutableStateOf((selectedTemplate?.usernameDigits ?: 10).toString()) }
+    var selectedProfile by remember(profiles) {
+        mutableStateOf(
+            selectedTemplate?.linkedHotspotProfile?.takeIf { it.isNotBlank() }
+                ?: profiles.firstOrNull()?.name
+                ?: "default"
+        )
+    }
     var limitUptime by remember { mutableStateOf("2h") }
     var limitBytes by remember { mutableStateOf("500M") }
+
+    val activeTemplateForPrint = remember(selectedTemplate, lengthText, selectedProfile, countText) {
+        (selectedTemplate ?: CardTemplateEntity()).copy(
+            usernameDigits = lengthText.toIntOrNull()?.coerceIn(4, 18) ?: 10,
+            linkedHotspotProfile = selectedProfile,
+            cardsCount = countText.toIntOrNull()?.coerceIn(1, 500) ?: 51
+        )
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Template Sync Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                border = BorderStroke(1.dp, Color(0xFFCCFBF1))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFCCFBF1),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Style, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text("استيراد قالب التصميم والطباعة", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = PrimaryNavy)
+                            Text("يزامن طول الأرقام والباقة وتنسيق PDF تلقائياً مع مصمم الكروت", fontSize = 11.sp, color = TextSecondaryLight)
+                        }
+                    }
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { templateMenuExpanded = true },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("hs_template_picker_btn")
+                        ) {
+                            Icon(Icons.Default.DesignServices, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = selectedTemplate?.let { "${it.templateName} (${it.categoryChip})" }
+                                    ?: "قالب افتراضي (3×17 • 10 أرقام)",
+                                modifier = Modifier.weight(1f),
+                                color = PrimaryNavy,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = PrimaryNavy)
+                        }
+
+                        DropdownMenu(
+                            expanded = templateMenuExpanded,
+                            onDismissRequest = { templateMenuExpanded = false },
+                            modifier = Modifier.fillMaxWidth(0.85f)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("استخدام إعدادات مخصصة (بدون قالب)", fontSize = 13.sp) },
+                                onClick = {
+                                    selectedTemplate = null
+                                    templateMenuExpanded = false
+                                }
+                            )
+                            cardTemplates.forEach { tpl ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("${tpl.templateName} (${tpl.categoryChip})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                            Text(
+                                                "أرقام: ${tpl.usernameDigits} | ${tpl.columnsPerPage}×${tpl.rowsPerPage} | باقة HS: ${tpl.linkedHotspotProfile.ifBlank { "-" }}",
+                                                fontSize = 11.sp,
+                                                color = TextSecondaryLight
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedTemplate = tpl
+                                        lengthText = tpl.usernameDigits.toString()
+                                        countText = tpl.cardsCount.toString()
+                                        if (tpl.linkedHotspotProfile.isNotBlank()) {
+                                            selectedProfile = tpl.linkedHotspotProfile
+                                        }
+                                        templateMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    selectedTemplate?.let { tpl ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AssistChip(
+                                onClick = {},
+                                label = { Text("طول الكود: ${tpl.usernameDigits} رقم", fontSize = 11.sp) }
+                            )
+                            AssistChip(
+                                onClick = {},
+                                label = { Text("التخطيط: ${tpl.columnsPerPage}×${tpl.rowsPerPage}", fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hotspot Batch Form
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -753,18 +893,42 @@ private fun HotspotGeneratorContent(
                     OutlinedTextField(
                         value = lengthText,
                         onValueChange = { lengthText = it },
-                        label = { Text("طول أرقام الكرت") },
+                        label = { Text("طول أرقام الكرت (متزامن مع القالب)") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp)
                     )
 
-                    OutlinedTextField(
-                        value = selectedProfile,
-                        onValueChange = { selectedProfile = it },
-                        label = { Text("اسم بروفايل الهوتسبوت") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = selectedProfile,
+                            onValueChange = { selectedProfile = it },
+                            label = { Text("اسم بروفايل الهوتسبوت") },
+                            trailingIcon = {
+                                if (profiles.isNotEmpty()) {
+                                    IconButton(onClick = { profileMenuExpanded = true }) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "اختر البروفايل")
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        DropdownMenu(
+                            expanded = profileMenuExpanded,
+                            onDismissRequest = { profileMenuExpanded = false }
+                        ) {
+                            profiles.forEach { prof ->
+                                DropdownMenuItem(
+                                    text = { Text("${prof.name} (السرعة: ${prof.rateLimit})") },
+                                    onClick = {
+                                        selectedProfile = prof.name
+                                        profileMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
 
                     OutlinedTextField(
                         value = limitUptime,
@@ -784,17 +948,21 @@ private fun HotspotGeneratorContent(
                         shape = RoundedCornerShape(10.dp)
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     Button(
                         onClick = {
                             val count = countText.toIntOrNull() ?: 50
-                            val len = lengthText.toIntOrNull() ?: 6
-                            onGenerate(prefix, count, selectedProfile, len, limitUptime, limitBytes)
+                            val len = lengthText.toIntOrNull() ?: 10
+                            val priceTag = selectedTemplate?.categoryChip?.replace("فئة ", "") ?: selectedProfile
+                            onGenerate(prefix, count, selectedProfile, len, limitUptime, limitBytes, priceTag)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("hs_generate_batch_btn")
                     ) {
                         Icon(Icons.Default.AutoAwesome, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -803,6 +971,109 @@ private fun HotspotGeneratorContent(
                 }
             }
         }
+
+        // Batch PDF Export Card
+        if (lastGeneratedBatch.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Color(0xFF86EFAC))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "تم توليد ${lastGeneratedBatch.size} كرت هوتسبوت بنجاح",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF15803D)
+                                )
+                                Text(
+                                    text = "جاهزة للطباعة وفق قالب: ${activeTemplateForPrint.templateName}",
+                                    fontSize = 11.sp,
+                                    color = TextSecondaryLight
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showA4Preview = true },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("hs_preview_a4_btn")
+                            ) {
+                                Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("معاينة A4", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    val pdf = CardPdfGenerator.generateA4CardsPdf(
+                                        context = context,
+                                        template = activeTemplateForPrint,
+                                        cardsInput = lastGeneratedBatch
+                                    )
+                                    if (pdf != null) {
+                                        CardPdfGenerator.openPdfOnDevice(context, pdf)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .height(48.dp)
+                                    .testTag("hs_export_pdf_btn")
+                            ) {
+                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("طباعة PDF", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showA4Preview) {
+        val bgBmp = remember(activeTemplateForPrint.bgImageUri, activeTemplateForPrint.enableBackground) {
+            if (activeTemplateForPrint.enableBackground && activeTemplateForPrint.bgImageUri.isNotBlank()) {
+                CardPdfGenerator.loadBitmapFromPathOrUri(context, activeTemplateForPrint.bgImageUri)
+            } else null
+        }
+        val logoBmp = remember(activeTemplateForPrint.logoImageUri, activeTemplateForPrint.enableLogo) {
+            if (activeTemplateForPrint.enableLogo && activeTemplateForPrint.logoImageUri.isNotBlank()) {
+                CardPdfGenerator.loadBitmapFromPathOrUri(context, activeTemplateForPrint.logoImageUri)
+            } else null
+        }
+        A4SheetPreviewDialog(
+            template = activeTemplateForPrint,
+            bgBitmap = bgBmp,
+            logoBitmap = logoBmp,
+            cards = lastGeneratedBatch,
+            onDismiss = { showA4Preview = false },
+            onExportAndOpenPdf = {
+                val pdf = CardPdfGenerator.generateA4CardsPdf(
+                    context = context,
+                    template = activeTemplateForPrint,
+                    cardsInput = lastGeneratedBatch
+                )
+                showA4Preview = false
+                if (pdf != null) {
+                    CardPdfGenerator.openPdfOnDevice(context, pdf)
+                }
+            }
+        )
     }
 }
 

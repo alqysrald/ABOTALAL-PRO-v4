@@ -1,28 +1,25 @@
 package com.example.ui.screens
 
-import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Paint
-import android.graphics.pdf.PdfDocument
-import android.net.Uri
-import android.os.Environment
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,34 +27,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
+import androidx.compose.ui.window.Dialog
 import com.example.data.model.CardTemplateEntity
+import com.example.data.model.GeneratedCardPrintItem
 import com.example.ui.TalalProViewModel
+import com.example.ui.components.*
 import com.example.ui.theme.*
+import com.example.ui.utils.CardPdfGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
-import kotlin.math.roundToInt
 
-enum class CardSystemType(val title: String, val systemKey: String) {
-    USER_MANAGER("نظام اليوزر مانجر (User Manager)", "USER_MANAGER"),
-    HOTSPOT("نظام الهوتسبوت (Hotspot)", "HOTSPOT")
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CardDesignerScreen(
     viewModel: TalalProViewModel,
@@ -66,748 +55,1443 @@ fun CardDesignerScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var selectedSystem by remember { mutableStateOf(CardSystemType.USER_MANAGER) }
-    val userManagerProfiles by viewModel.userManagerProfiles.collectAsState()
-    val hotspotProfiles by viewModel.hotspotProfiles.collectAsState()
+    val routers by viewModel.allRouters.collectAsState()
+    val activeRouter by viewModel.activeDesignerRouter.collectAsState()
+    val umProfiles by viewModel.userManagerProfiles.collectAsState()
+    val hsProfiles by viewModel.hotspotProfiles.collectAsState()
+    val savedTemplates by viewModel.cardTemplates.collectAsState()
+    val isRefreshingProfiles by viewModel.isRefreshingDesignerProfiles.collectAsState()
+    val profilesDisconnected by viewModel.designerProfilesDisconnected.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
-    val currentUserId = currentUser?.id ?: ""
 
-    val availableProfiles = if (selectedSystem == CardSystemType.USER_MANAGER) {
-        userManagerProfiles.map { it.name }.ifEmpty { listOf("1 Hour - 100MB", "1 Day - 1GB", "1 Week - 5GB", "1 Month - 30GB", "Default Profile") }
-    } else {
-        hotspotProfiles.map { it.name }.ifEmpty { listOf("default", "1Hour_500MB", "24Hours_Unlimited", "Weekly_VIP", "Monthly_10G") }
-    }
-
-    var selectedProfileName by remember { mutableStateOf(availableProfiles.firstOrNull() ?: "Default") }
-
-    // Card Dimensions & Layout Settings
-    var columnsCount by remember { mutableIntStateOf(3) }
-    var rowsCount by remember { mutableIntStateOf(5) }
-    var networkHeaderTitle by remember { mutableStateOf("شبكة طلال نت للتزويد الذكي") }
-    var profilePriceText by remember { mutableStateOf("السعر: 200 ريال | الصلاحية: 24 ساعة") }
-
-    // Draggable PIN Settings
-    var pinOffsetX by remember { mutableFloatStateOf(80f) }
-    var pinOffsetY by remember { mutableFloatStateOf(95f) }
-    var pinFontSizeSp by remember { mutableFloatStateOf(16f) }
-    var pinTextColor by remember { mutableStateOf(Color(0xFF0F172A)) }
-    var showPinBackgroundBox by remember { mutableStateOf(true) }
-    var showQrCode by remember { mutableStateOf(true) }
-    var showSerialNumber by remember { mutableStateOf(true) }
-
-    // Card Theme & Custom Background
-    var cardThemePreset by remember { mutableIntStateOf(0) }
-    var customBgBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var customBgUriString by remember { mutableStateOf<String?>(null) }
-
-    // Active View Mode: Single Card Live Design vs A4 Sheet Preview
-    var previewMode by remember { mutableIntStateOf(0) } // 0: Design Card, 1: A4 Sheet Preview
-
-    // Photo picker for background image
-    val pickImageLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val bmp = BitmapFactory.decodeStream(inputStream)
-                customBgBitmap = bmp
-                customBgUriString = uri.toString()
-                Toast.makeText(context, "تم استيراد خلفية الكرت بنجاح ✓", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "فشل قراءة الصورة: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+    // Ensure router is initialized for profile dropdowns
+    LaunchedEffect(routers) {
+        if (activeRouter == null && routers.isNotEmpty()) {
+            val first = routers.first()
+            viewModel.activeDesignerRouter.value = first
+            if (viewModel.selectedUserManagerRouter.value == null) {
+                viewModel.selectedUserManagerRouter.value = first
+            }
+            if (viewModel.selectedHotspotRouter.value == null) {
+                viewModel.selectedHotspotRouter.value = first
             }
         }
     }
 
-    // Load saved template when system or profile changes
-    LaunchedEffect(selectedSystem, selectedProfileName) {
-        val saved = viewModel.getCardTemplateSync(selectedSystem.systemKey, selectedProfileName)
-        if (saved != null) {
-            pinOffsetX = saved.pinXPercent * 3.5f
-            pinOffsetY = saved.pinYPercent * 1.5f
-            pinFontSizeSp = saved.pinFontSize.toFloat()
-            columnsCount = saved.columnsPerPage
-            rowsCount = saved.rowsPerPage
-            networkHeaderTitle = saved.templateName.ifBlank { networkHeaderTitle }
-            profilePriceText = saved.priceTagText.ifBlank { profilePriceText }
-            showQrCode = saved.showQrCode
-            customBgUriString = saved.bgImageUri.takeIf { it.isNotBlank() }
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = "مصمم ومحرر قوالب الكروت",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = TextPrimaryLight
-                        )
-                        Text(
-                            text = "تخصيص كامل لمعاينة الكرت، تحريك الرقم، وضبط مقاسات الطباعة PDF",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondaryLight
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            val template = CardTemplateEntity(
-                                userId = currentUserId,
-                                systemType = selectedSystem.systemKey,
-                                profileName = selectedProfileName,
-                                templateName = networkHeaderTitle,
-                                priceTagText = profilePriceText,
-                                pinXPercent = pinOffsetX / 3.5f,
-                                pinYPercent = pinOffsetY / 1.5f,
-                                pinFontSize = pinFontSizeSp.toInt(),
-                                columnsPerPage = columnsCount,
-                                rowsPerPage = rowsCount,
-                                showQrCode = showQrCode,
-                                bgImageUri = customBgUriString ?: ""
-                            )
-                            viewModel.saveCardTemplate(template)
-                            Toast.makeText(context, "تم حفظ قالب كروت $selectedProfileName بنجاح ✓", Toast.LENGTH_SHORT).show()
-                        }
-                    ) {
-                        Icon(Icons.Default.Save, contentDescription = "حفظ القالب", tint = PrimaryBlue)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+    // Active template state (all 16 sections live-synced!)
+    var template by remember {
+        mutableStateOf(
+            CardTemplateEntity(
+                userId = currentUser?.id ?: ""
             )
-        },
-        containerColor = Color(0xFFF1F5F9),
+        )
+    }
+
+    // Load initial saved template if one exists on first open
+    var initializedFromDb by remember { mutableStateOf(false) }
+    LaunchedEffect(savedTemplates) {
+        if (!initializedFromDb && savedTemplates.isNotEmpty()) {
+            template = savedTemplates.first()
+            initializedFromDb = true
+        }
+    }
+
+    // Cached bitmaps for Live Preview
+    var bgBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var logoBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    LaunchedEffect(template.bgImageUri, template.enableBackground) {
+        bgBitmap = if (template.bgImageUri.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                CardPdfGenerator.loadBitmapFromPathOrUri(context, template.bgImageUri)
+            }
+        } else null
+    }
+
+    LaunchedEffect(template.logoImageUri, template.enableLogo) {
+        logoBitmap = if (template.logoImageUri.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                CardPdfGenerator.loadBitmapFromPathOrUri(context, template.logoImageUri)
+            }
+        } else null
+    }
+
+    // Zero-permission Photo Pickers (Play Policy Compliant)
+    val bgPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val savedPath = CardPdfGenerator.persistPickedImage(context, uri, "card_bg")
+                withContext(Dispatchers.Main) {
+                    if (savedPath != null) {
+                        template = template.copy(
+                            bgImageUri = savedPath,
+                            enableBackground = true
+                        )
+                        Toast.makeText(context, "تم رفع وحفظ خلفية الكرت بنجاح ✓", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "تعذر قراءة الصورة المختارة", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    val logoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val savedPath = CardPdfGenerator.persistPickedImage(context, uri, "card_logo")
+                withContext(Dispatchers.Main) {
+                    if (savedPath != null) {
+                        template = template.copy(
+                            logoImageUri = savedPath,
+                            enableLogo = true
+                        )
+                        Toast.makeText(context, "تم استيراد شعار الكرت بنجاح ✓", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "تعذر قراءة الشعار المختار", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    // Dialog states
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showSavedGalleryDialog by remember { mutableStateOf(false) }
+    var showA4PreviewDialog by remember { mutableStateOf(false) }
+    var isExportingPdf by remember { mutableStateOf(false) }
+
+    // Live sample card reflecting digit length & category price
+    val sampleCard = remember(
+        template.usernameDigits,
+        template.categoryChip,
+        template.linkedUmProfile,
+        template.linkedHotspotProfile
+    ) {
+        val code = CardPdfGenerator.sampleUsername(template.usernameDigits)
+        GeneratedCardPrintItem(
+            username = code,
+            password = code.takeLast(6),
+            profileName = template.linkedUmProfile.ifBlank { template.linkedHotspotProfile.ifBlank { "default" } },
+            price = template.categoryChip.replace("فئة ", ""),
+            serial = "SN-0001",
+            paymentNumber = "B-1024",
+            posName = activeRouter?.name ?: "نقطة البيع"
+        )
+    }
+
+    Column(
         modifier = modifier
-    ) { paddingValues ->
-        Column(
+            .fillMaxSize()
+            .background(Color(0xFFF1F5F9))
+    ) {
+        // ================= SCROLLABLE DESIGNER SECTIONS (TOP TO BOTTOM) =================
+        LazyColumn(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // System Selector Tabs (User Manager vs Hotspot)
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color.White,
-                shadowElevation = 2.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    CardSystemType.values().forEach { sys ->
-                        val isSelected = selectedSystem == sys
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (isSelected) Brush.linearGradient(listOf(PrimaryNavy, PrimaryBlue))
-                                    else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
-                                )
-                                .clickable {
-                                    selectedSystem = sys
-                                    selectedProfileName = availableProfiles.firstOrNull() ?: "Default"
-                                }
-                        ) {
-                            Text(
-                                text = sys.title,
-                                fontSize = 13.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) Color.White else TextSecondaryLight
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Profile Selector Dropdown / Row
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "اختر البروفايل / الباقة لتخصيص قالب الكرت الخاص بها:",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimaryLight
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        availableProfiles.take(4).forEach { pName ->
-                            val isChosen = selectedProfileName == pName
-                            FilterChip(
-                                selected = isChosen,
-                                onClick = { selectedProfileName = pName },
-                                label = { Text(pName, fontSize = 11.sp, fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Normal) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = PrimaryBlue.copy(alpha = 0.15f),
-                                    selectedLabelColor = PrimaryBlue
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Mode Toggle: Live Interactive Card Canvas VS A4 Page Preview
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { previewMode = 0 },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (previewMode == 0) PrimaryBlue else Color.White,
-                        contentColor = if (previewMode == 0) Color.White else PrimaryNavy
-                    ),
-                    modifier = Modifier.weight(1f).height(46.dp)
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("تصميم الكرت والتفاعل", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-
-                OutlinedButton(
-                    onClick = { previewMode = 1 },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (previewMode == 1) PrimaryBlue else Color.White,
-                        contentColor = if (previewMode == 1) Color.White else PrimaryNavy
-                    ),
-                    modifier = Modifier.weight(1f).height(46.dp)
-                ) {
-                    Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("معاينة صفحة A4 والطباعة", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            if (previewMode == 0) {
-                // ================= INTERACTIVE CARD DESIGN CANVAS =================
+            // 1. شريط الإجراءات الرئيسي (Action Bar) - أعلى القسم
+            item {
                 Card(
-                    shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0))
                 ) {
                     Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "منطقة معاينة الكرت التفاعلية (اسحب الرقم بيدك):",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = PrimaryNavy
-                            )
-                            IconButton(onClick = { pickImageLauncher.launch("image/*") }) {
-                                Icon(Icons.Default.AddPhotoAlternate, contentDescription = "استيراد خلفية", tint = PrimaryBlue)
-                            }
-                        }
-
-                        // The Interactive Draggable Card Container
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(200.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(
-                                    when (cardThemePreset) {
-                                        0 -> Brush.linearGradient(listOf(Color(0xFF0F172A), Color(0xFF1E3A8A)))
-                                        1 -> Brush.linearGradient(listOf(Color(0xFF047857), Color(0xFF065F46)))
-                                        2 -> Brush.linearGradient(listOf(Color(0xFF7C2D12), Color(0xFF991B1B)))
-                                        else -> Brush.linearGradient(listOf(Color(0xFF312E81), Color(0xFF4C1D95)))
-                                    }
-                                )
-                                .border(2.dp, Color(0xFF38BDF8).copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-                        ) {
-                            // Header bar on card
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(
-                                        text = networkHeaderTitle,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
-                                    Text(
-                                        text = "الباقة: $selectedProfileName",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF38BDF8)
-                                    )
-                                }
-                                Icon(Icons.Default.Wifi, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-                            }
-
-                            // Optional QR Code Icon box
-                            if (showQrCode) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(12.dp)
-                                        .size(44.dp)
-                                        .background(Color.White, RoundedCornerShape(8.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.QrCode2, contentDescription = null, tint = Color(0xFF0F172A), modifier = Modifier.size(36.dp))
-                                }
-                            }
-
-                            // Optional Price & Validity Footer
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(12.dp)
-                            ) {
-                                Text(
-                                    text = profilePriceText,
-                                    fontSize = 10.sp,
-                                    color = Color(0xFFE2E8F0),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                if (showSerialNumber) {
-                                    Text(
-                                        text = "S/N: 2026-98741",
-                                        fontSize = 9.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = Color(0xFF94A3B8)
-                                    )
-                                }
-                            }
-
-                            // DRAGGABLE PIN BOX WITH GESTURES
-                            Box(
-                                modifier = Modifier
-                                    .offset { IntOffset(pinOffsetX.roundToInt(), pinOffsetY.roundToInt()) }
-                                    .pointerInput(Unit) {
-                                        detectDragGestures { change, dragAmount ->
-                                            change.consume()
-                                            pinOffsetX = (pinOffsetX + dragAmount.x).coerceIn(10f, 350f)
-                                            pinOffsetY = (pinOffsetY + dragAmount.y).coerceIn(10f, 150f)
-                                        }
-                                    }
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (showPinBackgroundBox) Color.White else Color.Transparent)
-                                    .border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(Icons.Default.DragIndicator, contentDescription = "اسحب", tint = PrimaryBlue, modifier = Modifier.size(14.dp))
-                                    Text(
-                                        text = "PIN: 84920481",
-                                        fontSize = pinFontSizeSp.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (showPinBackgroundBox) pinTextColor else Color.White
-                                    )
-                                }
-                            }
-                        }
-
-                        // Fine Adjustment Sliders for PIN Position
-                        Text(
-                            text = "تحكم دقيق بإحداثيات رقم الكرت وحجم الخط:",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimaryLight
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "الموضع الأفقي X: ${pinOffsetX.toInt()}", fontSize = 11.sp, color = TextSecondaryLight)
-                                Slider(
-                                    value = pinOffsetX,
-                                    onValueChange = { pinOffsetX = it },
-                                    valueRange = 0f..350f
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "الموضع الرأسي Y: ${pinOffsetY.toInt()}", fontSize = 11.sp, color = TextSecondaryLight)
-                                Slider(
-                                    value = pinOffsetY,
-                                    onValueChange = { pinOffsetY = it },
-                                    valueRange = 0f..150f
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "حجم خط الرقم: ${pinFontSizeSp.toInt()}sp", fontSize = 11.sp, color = TextSecondaryLight)
-                                Slider(
-                                    value = pinFontSizeSp,
-                                    onValueChange = { pinFontSizeSp = it },
-                                    valueRange = 10f..26f
-                                )
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(text = "خيارات إضافية:", fontSize = 11.sp, color = TextSecondaryLight)
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Checkbox(checked = showPinBackgroundBox, onCheckedChange = { showPinBackgroundBox = it })
-                                    Text(text = "خلفية بيضاء للرقم", fontSize = 11.sp)
-                                }
-                            }
-                        }
-
-                        // Text fields for card texts
-                        OutlinedTextField(
-                            value = networkHeaderTitle,
-                            onValueChange = { networkHeaderTitle = it },
-                            label = { Text("عنوان أعلى الكرت / اسم الشبكة", fontSize = 12.sp) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        OutlinedTextField(
-                            value = profilePriceText,
-                            onValueChange = { profilePriceText = it },
-                            label = { Text("نص السعر والصلاحية", fontSize = 12.sp) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        // Theme Presets Selector
-                        Text(
-                            text = "سمات وألوان خلفية الكرت:",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimaryLight
-                        )
-
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val themes = listOf("أزرق ليلي", "أخضر زمردي", "عنابي ملكي", "بنفسجي نيون")
-                            themes.forEachIndexed { idx, name ->
-                                FilterChip(
-                                    selected = cardThemePreset == idx,
-                                    onClick = { cardThemePreset = idx },
-                                    label = { Text(name, fontSize = 11.sp) }
+                            // زر الحذف (Delete) - لون أحمر
+                            Button(
+                                onClick = { showDeleteConfirm = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFDC2626),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .height(48.dp)
+                                    .testTag("delete_design_button")
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "حذف", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("حذف", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
+                            // زر جديد (New) - لون أبيض
+                            OutlinedButton(
+                                onClick = {
+                                    template = CardTemplateEntity(userId = currentUser?.id ?: "")
+                                    Toast.makeText(context, "تم فتح تصميم جديد (Default_Design)", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = Color.White,
+                                    contentColor = PrimaryNavy
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .height(48.dp)
+                                    .testTag("new_design_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "جديد", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("جديد", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
+                            // زر حفظ التصميم (Save Design) - لون أزرق/تركوازي
+                            Button(
+                                onClick = {
+                                    val systemResolved = when {
+                                        template.linkedUmProfile.isNotBlank() && template.linkedHotspotProfile.isNotBlank() -> "BOTH"
+                                        template.linkedHotspotProfile.isNotBlank() -> "HOTSPOT"
+                                        else -> "USER_MANAGER"
+                                    }
+                                    val primaryProfile = template.linkedUmProfile.ifBlank {
+                                        template.linkedHotspotProfile.ifBlank { "default" }
+                                    }
+                                    val toSave = template.copy(
+                                        userId = currentUser?.id ?: "",
+                                        templateName = template.templateName.ifBlank { "Default_Design" },
+                                        systemType = systemResolved,
+                                        profileName = primaryProfile
+                                    )
+                                    viewModel.saveCardTemplate(toSave) { newId ->
+                                        template = toSave.copy(id = newId)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF0891B2),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .height(48.dp)
+                                    .testTag("save_design_button")
+                            ) {
+                                Icon(Icons.Default.Save, contentDescription = "حفظ التصميم", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("حفظ التصميم", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+
+                        // Quick switcher for saved templates if any exist
+                        if (savedTemplates.isNotEmpty()) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(savedTemplates, key = { it.id }) { item ->
+                                    val isCurrent = item.id == template.id && template.id != 0L
+                                    FilterChip(
+                                        selected = isCurrent,
+                                        onClick = { template = item },
+                                        label = {
+                                            Text(
+                                                "${item.templateName} (${item.categoryChip})",
+                                                fontSize = 11.sp,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Style,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. قسم قالب التصميم (Template Settings)
+            item {
+                DesignerSectionCard(
+                    title = "قالب التصميم",
+                    icon = Icons.Default.Lightbulb,
+                    iconTint = Color(0xFFF59E0B)
+                ) {
+                    OutlinedTextField(
+                        value = template.templateName,
+                        onValueChange = { template = template.copy(templateName = it) },
+                        label = { Text("اسم التصميم") },
+                        placeholder = { Text("Default_Design") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("template_name_input")
+                    )
+
+                    Text(
+                        text = "اختيار الفئة (لتحديد نوع القالب):",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TextSecondaryLight
+                    )
+
+                    val categories = listOf(
+                        "فئة 100 ريال",
+                        "فئة 200 ريال",
+                        "فئة 250 ريال",
+                        "فئة 300 ريال",
+                        "فئة 500 ريال",
+                        "فئة 1000 ريال",
+                        "فئة 3000 ريال"
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        categories.forEach { cat ->
+                            val selected = template.categoryChip == cat
+                            FilterChip(
+                                selected = selected,
+                                onClick = { template = template.copy(categoryChip = cat) },
+                                label = {
+                                    Text(
+                                        text = cat,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFF0891B2),
+                                    selectedLabelColor = Color.White,
+                                    containerColor = Color(0xFFF8FAFC),
+                                    labelColor = PrimaryNavy
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 3. قسم الربط بالباقة (Package Linking)
+            item {
+                DesignerSectionCard(
+                    title = "الربط بالباقة",
+                    icon = Icons.Default.Link,
+                    iconTint = PrimaryBlue
+                ) {
+                    // Active Router Picker
+                    if (routers.isNotEmpty()) {
+                        var routerMenuExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            OutlinedCard(
+                                onClick = { routerMenuExpanded = true },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFFF8FAFC)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Router, contentDescription = null, tint = PrimaryBlue, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "الراوتر: ${activeRouter?.name ?: "اختر راوتر"}",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = PrimaryNavy
+                                        )
+                                    }
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = routerMenuExpanded,
+                                onDismissRequest = { routerMenuExpanded = false }
+                            ) {
+                                routers.forEach { r ->
+                                    DropdownMenuItem(
+                                        text = { Text("${r.name} (${r.host})") },
+                                        onClick = {
+                                            routerMenuExpanded = false
+                                            viewModel.refreshProfilesForCardDesigner(r)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // User Manager Profile Dropdown
+                    var umExpanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(
+                        expanded = umExpanded,
+                        onExpandedChange = { umExpanded = !umExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = template.linkedUmProfile.ifBlank { "اختر باقة User Manager..." },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("ربطه مع باقة User Manager") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = umExpanded) },
+                            leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null, tint = Color(0xFF0284C7)) },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = umExpanded,
+                            onDismissRequest = { umExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("بدون ربط (غير محدد)", color = TextSecondaryLight) },
+                                onClick = {
+                                    template = template.copy(linkedUmProfile = "")
+                                    umExpanded = false
+                                }
+                            )
+                            if (umProfiles.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("لا توجد باقات محملة — اضغط تحديث الباقات", fontSize = 12.sp, color = Color(0xFFD97706)) },
+                                    onClick = { umExpanded = false }
+                                )
+                            } else {
+                                umProfiles.distinctBy { it.name }.forEach { prof ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(prof.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                Text("السعر: ${prof.price} | الصلاحية: ${prof.validity}", fontSize = 11.sp, color = TextSecondaryLight)
+                                            }
+                                        },
+                                        onClick = {
+                                            template = template.copy(linkedUmProfile = prof.name)
+                                            umExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Hotspot Profile Dropdown
+                    var hsExpanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(
+                        expanded = hsExpanded,
+                        onExpandedChange = { hsExpanded = !hsExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = template.linkedHotspotProfile.ifBlank { "اختر باقة Hotspot..." },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("ربطه مع باقة Hotspot") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = hsExpanded) },
+                            leadingIcon = { Icon(Icons.Default.WifiTethering, contentDescription = null, tint = Color(0xFFEA580C)) },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = hsExpanded,
+                            onDismissRequest = { hsExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("بدون ربط (غير محدد)", color = TextSecondaryLight) },
+                                onClick = {
+                                    template = template.copy(linkedHotspotProfile = "")
+                                    hsExpanded = false
+                                }
+                            )
+                            if (hsProfiles.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("لا توجد بروفايلات هوتسبوت محملة — اضغط تحديث", fontSize = 12.sp, color = Color(0xFFD97706)) },
+                                    onClick = { hsExpanded = false }
+                                )
+                            } else {
+                                hsProfiles.distinctBy { it.name }.forEach { prof ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(prof.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                Text("السرعة: ${prof.rateLimit} | مشتركين: ${prof.sharedUsers}", fontSize = 11.sp, color = TextSecondaryLight)
+                                            }
+                                        },
+                                        onClick = {
+                                            template = template.copy(linkedHotspotProfile = prof.name)
+                                            hsExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Refresh Profiles Button
+                    val infiniteTransition = rememberInfiniteTransition(label = "refreshSpin")
+                    val angle by infiniteTransition.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(1000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Restart
+                        ),
+                        label = "spinAngle"
+                    )
+
+                    Button(
+                        onClick = { viewModel.refreshProfilesForCardDesigner(activeRouter) },
+                        enabled = !isRefreshingProfiles,
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("refresh_profiles_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .then(if (isRefreshingProfiles) Modifier.rotate(angle) else Modifier)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isRefreshingProfiles) "جاري تحديث الباقات من RouterOS..." else "تحديث الباقات من RouterOS",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    // Helper notice if disconnected or profiles missing
+                    if (profilesDisconnected || routers.isEmpty() || (umProfiles.isEmpty() && hsProfiles.isEmpty())) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFFFFBEB),
+                            border = BorderStroke(1.dp, Color(0xFFFDE68A)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.WifiOff, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "اتصل بالراوتر لجلب الباقات الحقيقية",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF92400E)
                                 )
                             }
                         }
                     }
                 }
-            } else {
-                // ================= A4 PAGE PRINT PREVIEW & PDF EXPORT =================
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                    modifier = Modifier.fillMaxWidth()
+            }
+
+            // 4. قسم بيانات الصفحة (Page Data & Print Settings)
+            item {
+                DesignerSectionCard(
+                    title = "بيانات الصفحة",
+                    icon = Icons.Default.Settings,
+                    iconTint = Color(0xFF475569)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    IntStepperRow(
+                        label = "عدد الأعمدة",
+                        value = template.columnsPerPage,
+                        minValue = 1,
+                        maxValue = 10,
+                        onValueChange = { cols ->
+                            template = template.copy(
+                                columnsPerPage = cols,
+                                cardsCount = cols * template.rowsPerPage
+                            )
+                        }
+                    )
+
+                    IntStepperRow(
+                        label = "عدد الصفوف",
+                        value = template.rowsPerPage,
+                        minValue = 1,
+                        maxValue = 30,
+                        onValueChange = { rows ->
+                            template = template.copy(
+                                rowsPerPage = rows,
+                                cardsCount = template.columnsPerPage * rows
+                            )
+                        }
+                    )
+
+                    IntStepperRow(
+                        label = "عدد الكروت",
+                        value = template.cardsCount,
+                        minValue = 1,
+                        maxValue = 500,
+                        onValueChange = { cnt ->
+                            template = template.copy(cardsCount = cnt)
+                        }
+                    )
+
+                    IntStepperRow(
+                        label = "عدد أرقام اسم المستخدم",
+                        value = template.usernameDigits,
+                        minValue = 4,
+                        maxValue = 18,
+                        onValueChange = { digits ->
+                            template = template.copy(usernameDigits = digits)
+                        }
+                    )
+
+                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
+
+                    DesignerToggleRow(
+                        label = "مضاعفة الطباعة لمقاس الكروت حسب A4",
+                        checked = template.scaleToA4,
+                        onCheckedChange = { template = template.copy(scaleToA4 = it) }
+                    )
+
+                    Text(
+                        text = "هامش بين الكروت",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryNavy
+                    )
+
+                    FloatStepperRow(
+                        label = "أفقي (مم)",
+                        value = template.marginHorizontalMm,
+                        minValue = 0.0f,
+                        maxValue = 20.0f,
+                        step = 0.5f,
+                        onValueChange = { template = template.copy(marginHorizontalMm = it) }
+                    )
+
+                    FloatStepperRow(
+                        label = "رأسي (مم)",
+                        value = template.marginVerticalMm,
+                        minValue = 0.0f,
+                        maxValue = 20.0f,
+                        step = 0.5f,
+                        onValueChange = { template = template.copy(marginVerticalMm = it) }
+                    )
+
+                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
+
+                    DesignerToggleRow(
+                        label = "ملاحظة على الصفحة",
+                        checked = template.showPageNote,
+                        onCheckedChange = { template = template.copy(showPageNote = it) }
+                    )
+
+                    AnimatedVisibility(visible = template.showPageNote) {
+                        OutlinedTextField(
+                            value = template.pageNote,
+                            onValueChange = { template = template.copy(pageNote = it) },
+                            label = { Text("ملاحظة على الصفحة") },
+                            placeholder = { Text("اكتب ملاحظة تظهر أعلى صفحة الطباعة...") },
+                            minLines = 3,
+                            maxLines = 5,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            // 5. قسم الخلفية (Background)
+            item {
+                DesignerSectionCard(
+                    title = "الخلفية",
+                    icon = Icons.Default.Image,
+                    iconTint = Color(0xFF0D9488),
+                    trailingSwitchChecked = template.enableBackground,
+                    onTrailingSwitchChange = { template = template.copy(enableBackground = it) }
+                ) {
+                    DesignerToggleRow(
+                        label = "تفعيل خلفية الكرت",
+                        checked = template.enableBackground,
+                        onCheckedChange = { template = template.copy(enableBackground = it) }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        OutlinedButton(
+                            onClick = {
+                                template = template.copy(bgImageUri = "", enableBackground = false)
+                                bgBitmap = null
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = Color(0xFFF1F5F9),
+                                contentColor = Color(0xFF64748B)
+                            ),
+                            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(0.8f)
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("مسح", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                bgPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D9488)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("اختيار صورة ورفعها", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Text(
+                        text = "تحفظ الخلفية ضمن التصميم على الخادم، وتملأ مساحة الكرت بدون حواف إضافية",
+                        fontSize = 11.sp,
+                        color = TextSecondaryLight,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+
+            // 6. قسم حواف الكرت (Card Borders)
+            item {
+                DesignerSectionCard(
+                    title = "حواف الكرت",
+                    icon = Icons.Default.CropSquare,
+                    iconTint = Color(0xFF1E293B),
+                    trailingSwitchChecked = template.enableBorder,
+                    onTrailingSwitchChange = { template = template.copy(enableBorder = it) }
+                ) {
+                    DesignerToggleRow(
+                        label = "تفعيل الإطار",
+                        checked = template.enableBorder,
+                        onCheckedChange = { template = template.copy(enableBorder = it) }
+                    )
+
+                    AnimatedVisibility(visible = template.enableBorder) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ColorPickerFieldRow(
+                                label = "لون الإطار",
+                                colorHex = template.borderColorHex,
+                                onColorSelected = { template = template.copy(borderColorHex = it) }
+                            )
+
+                            FloatStepperRow(
+                                label = "حجم الإطار (مم)",
+                                value = template.borderSizeMm,
+                                minValue = 0.1f,
+                                maxValue = 5.0f,
+                                step = 0.1f,
+                                onValueChange = { template = template.copy(borderSizeMm = it) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 7. قسم عناصر الكرت (Card Elements)
+            item {
+                DesignerSectionCard(
+                    title = "عناصر الكرت",
+                    icon = Icons.Default.FormatListBulleted,
+                    iconTint = Color(0xFF6366F1)
+                ) {
+                    Text(
+                        text = "عرض الوحدة / العنوان",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryNavy
+                    )
+
+                    DesignerToggleRow(
+                        label = "إظهار اسم المستخدم",
+                        checked = template.showUsername,
+                        onCheckedChange = { template = template.copy(showUsername = it) }
+                    )
+
+                    DesignerToggleRow(
+                        label = "تفعيل عنوان مخصص",
+                        checked = template.enableCustomTitle,
+                        onCheckedChange = { template = template.copy(enableCustomTitle = it) }
+                    )
+
+                    AnimatedVisibility(visible = template.enableCustomTitle) {
+                        OutlinedTextField(
+                            value = template.customTitleText,
+                            onValueChange = { template = template.copy(customTitleText = it) },
+                            label = { Text("نص العنوان") },
+                            placeholder = { Text("أدخل عنوان الكرت...") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f))
+
+                    Text(
+                        text = "إعدادات الخط",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryNavy
+                    )
+
+                    ColorPickerFieldRow(
+                        label = "لون الخط",
+                        colorHex = template.fontColorHex,
+                        onColorSelected = { template = template.copy(fontColorHex = it) }
+                    )
+
+                    FloatStepperRow(
+                        label = "حجم الخط",
+                        value = template.fontSize,
+                        minValue = 5.0f,
+                        maxValue = 30.0f,
+                        step = 0.5f,
+                        onValueChange = { template = template.copy(fontSize = it) }
+                    )
+
+                    DesignerToggleRow(
+                        label = "الخط غامق",
+                        checked = template.isFontBold,
+                        onCheckedChange = { template = template.copy(isFontBold = it) }
+                    )
+                }
+            }
+
+            // 8. قسم رقم الصفحة (Page Number) + تحريك كود المستخدم يدوياً
+            item {
+                DesignerSectionCard(
+                    title = "رقم الصفحة",
+                    icon = Icons.Default.FormatListNumbered,
+                    iconTint = Color(0xFF0284C7),
+                    trailingSwitchChecked = template.showPageNumber,
+                    onTrailingSwitchChange = { template = template.copy(showPageNumber = it) }
+                ) {
+                    DesignerToggleRow(
+                        label = "إظهار رقم الصفحة",
+                        checked = template.showPageNumber,
+                        onCheckedChange = { template = template.copy(showPageNumber = it) }
+                    )
+
+                    Text(
+                        text = "تحريك كود المستخدم يدويا",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryNavy
+                    )
+
+                    DPadController(
+                        title = "موضع كود المستخدم داخل الكرت",
+                        xPercent = template.userXPercent,
+                        yPercent = template.userYPercent,
+                        onMove = { nx, ny ->
+                            template = template.copy(userXPercent = nx, userYPercent = ny)
+                        }
+                    )
+                }
+            }
+
+            // 9. قسم كلمة المرور (Password Settings)
+            item {
+                PositionedElementSectionCard(
+                    sectionTitle = "كلمة المرور",
+                    toggleLabel = "إظهار كلمة المرور",
+                    textFieldLabel = "نص كلمة المرور",
+                    sizeStepperLabel = "حجم كلمة المرور",
+                    icon = Icons.Default.Key,
+                    iconTint = Color(0xFF7C3AED),
+                    isEnabled = template.showPassword,
+                    onToggleChange = { template = template.copy(showPassword = it) },
+                    textValue = template.passwordText,
+                    onTextChange = { template = template.copy(passwordText = it) },
+                    fontSize = template.passwordFontSize,
+                    onFontSizeChange = { template = template.copy(passwordFontSize = it) },
+                    xPercent = template.passwordXPercent,
+                    yPercent = template.passwordYPercent,
+                    onMove = { nx, ny ->
+                        template = template.copy(passwordXPercent = nx, passwordYPercent = ny)
+                    }
+                )
+            }
+
+            // 10. قسم رقم الدفعة (Payment Number)
+            item {
+                PositionedElementSectionCard(
+                    sectionTitle = "رقم الدفعة",
+                    toggleLabel = "إظهار رقم الدفعة",
+                    textFieldLabel = "نص رقم الدفعة",
+                    sizeStepperLabel = "حجم رقم الدفعة",
+                    icon = Icons.Default.ConfirmationNumber,
+                    iconTint = Color(0xFF0891B2),
+                    isEnabled = template.showPayment,
+                    onToggleChange = { template = template.copy(showPayment = it) },
+                    textValue = template.paymentText,
+                    onTextChange = { template = template.copy(paymentText = it) },
+                    fontSize = template.paymentFontSize,
+                    onFontSizeChange = { template = template.copy(paymentFontSize = it) },
+                    xPercent = template.paymentXPercent,
+                    yPercent = template.paymentYPercent,
+                    onMove = { nx, ny ->
+                        template = template.copy(paymentXPercent = nx, paymentYPercent = ny)
+                    }
+                )
+            }
+
+            // 11. قسم الرقم التسلسلي (Serial Number)
+            item {
+                PositionedElementSectionCard(
+                    sectionTitle = "الرقم التسلسلي",
+                    toggleLabel = "إظهار الرقم التسلسلي",
+                    textFieldLabel = "نص الرقم التسلسلي",
+                    sizeStepperLabel = "حجم الرقم التسلسلي",
+                    icon = Icons.Default.Pin,
+                    iconTint = Color(0xFF059669),
+                    isEnabled = template.showSerial,
+                    onToggleChange = { template = template.copy(showSerial = it) },
+                    textValue = template.serialText,
+                    onTextChange = { template = template.copy(serialText = it) },
+                    fontSize = template.serialFontSize,
+                    onFontSizeChange = { template = template.copy(serialFontSize = it) },
+                    xPercent = template.serialXPercent,
+                    yPercent = template.serialYPercent,
+                    onMove = { nx, ny ->
+                        template = template.copy(serialXPercent = nx, serialYPercent = ny)
+                    }
+                )
+            }
+
+            // 12. قسم سعر الباقة (Package Price)
+            item {
+                PositionedElementSectionCard(
+                    sectionTitle = "سعر الباقة",
+                    toggleLabel = "إظهار سعر الباقة",
+                    textFieldLabel = "نص سعر الباقة",
+                    sizeStepperLabel = "حجم سعر الباقة",
+                    icon = Icons.Default.Sell,
+                    iconTint = Color(0xFFEA580C),
+                    isEnabled = template.showPrice,
+                    onToggleChange = { template = template.copy(showPrice = it) },
+                    textValue = template.priceTagText,
+                    onTextChange = { template = template.copy(priceTagText = it) },
+                    fontSize = template.priceFontSize,
+                    onFontSizeChange = { template = template.copy(priceFontSize = it) },
+                    xPercent = template.priceXPercent,
+                    yPercent = template.priceYPercent,
+                    onMove = { nx, ny ->
+                        template = template.copy(priceXPercent = nx, priceYPercent = ny)
+                    }
+                )
+            }
+
+            // 13. قسم نقطة البيع (Point of Sale - POS)
+            item {
+                PositionedElementSectionCard(
+                    sectionTitle = "نقطة البيع",
+                    toggleLabel = "إظهار نقطة البيع",
+                    textFieldLabel = "نص نقطة البيع",
+                    sizeStepperLabel = "حجم نقطة البيع",
+                    icon = Icons.Default.Storefront,
+                    iconTint = Color(0xFFDB2777),
+                    isEnabled = template.showPos,
+                    onToggleChange = { template = template.copy(showPos = it) },
+                    textValue = template.posText,
+                    onTextChange = { template = template.copy(posText = it) },
+                    fontSize = template.posFontSize,
+                    onFontSizeChange = { template = template.copy(posFontSize = it) },
+                    xPercent = template.posXPercent,
+                    yPercent = template.posYPercent,
+                    onMove = { nx, ny ->
+                        template = template.copy(posXPercent = nx, posYPercent = ny)
+                    }
+                )
+            }
+
+            // 14. قسم الباركود (Barcode)
+            item {
+                DesignerSectionCard(
+                    title = "الباركود",
+                    icon = Icons.Default.QrCode2,
+                    iconTint = Color(0xFF0F172A),
+                    trailingSwitchChecked = template.enableBarcode,
+                    onTrailingSwitchChange = { template = template.copy(enableBarcode = it) }
+                ) {
+                    DesignerToggleRow(
+                        label = "تفعيل الباركود",
+                        checked = template.enableBarcode,
+                        onCheckedChange = { template = template.copy(enableBarcode = it) }
+                    )
+
+                    AnimatedVisibility(visible = template.enableBarcode) {
+                        DPadController(
+                            title = "تحريك الباركود داخل الكرت",
+                            xPercent = template.barcodeXPercent,
+                            yPercent = template.barcodeYPercent,
+                            onMove = { nx, ny ->
+                                template = template.copy(barcodeXPercent = nx, barcodeYPercent = ny)
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 15. قسم الشعار (Logo)
+            item {
+                DesignerSectionCard(
+                    title = "الشعار",
+                    icon = Icons.Default.Verified,
+                    iconTint = Color(0xFF2563EB),
+                    trailingSwitchChecked = template.enableLogo,
+                    onTrailingSwitchChange = { template = template.copy(enableLogo = it) }
+                ) {
+                    DesignerToggleRow(
+                        label = "تفعيل شعار الكرت",
+                        checked = template.enableLogo,
+                        onCheckedChange = { template = template.copy(enableLogo = it) }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (template.logoImageUri.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    template = template.copy(logoImageUri = "", enableLogo = false)
+                                    logoBitmap = null
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("مسح", fontSize = 12.sp)
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                logoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("اختيار شعار", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
+                    FloatStepperRow(
+                        label = "العرض (مم)",
+                        value = template.logoWidthMm,
+                        minValue = 2.0f,
+                        maxValue = 50.0f,
+                        step = 0.5f,
+                        onValueChange = { template = template.copy(logoWidthMm = it) }
+                    )
+
+                    FloatStepperRow(
+                        label = "الارتفاع (مم)",
+                        value = template.logoHeightMm,
+                        minValue = 2.0f,
+                        maxValue = 50.0f,
+                        step = 0.5f,
+                        onValueChange = { template = template.copy(logoHeightMm = it) }
+                    )
+
+                    AnimatedVisibility(visible = template.enableLogo) {
+                        DPadController(
+                            title = "تحريك الشعار داخل الكرت",
+                            xPercent = template.logoXPercent,
+                            yPercent = template.logoYPercent,
+                            onMove = { nx, ny ->
+                                template = template.copy(logoXPercent = nx, logoYPercent = ny)
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 16. قسم تصنيفات الخلفيات (Background Categories)
+            item {
+                DesignerSectionCard(
+                    title = "تصنيفات الخلفيات",
+                    icon = Icons.Default.PhotoLibrary,
+                    iconTint = Color(0xFF9333EA)
+                ) {
+                    Text(
+                        text = "احفظ الخلفية داخل قالب باسم وفئة، ثم أعد اختياره من قائمة القوالب في أي وقت",
+                        fontSize = 12.sp,
+                        color = TextSecondaryLight,
+                        lineHeight = 18.sp
+                    )
+
+                    Button(
+                        onClick = { showSavedGalleryDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("عرض الخلفيات المحفوظة", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+
+        // ================= STICKY PREVIEW FOOTER (منطقة المعاينة الثابتة) =================
+        Surface(
+            color = Color.White,
+            shadowElevation = 12.dp,
+            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Visibility,
+                            contentDescription = "معاينة الكرت",
+                            tint = PrimaryBlue,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "معاينة صفحة الطباعة A4 وتوزيع الأعمدة:",
-                            fontSize = 14.sp,
+                            text = "معاينة الكرت",
                             fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
                             color = PrimaryNavy
                         )
+                    }
 
-                        // A4 Sheet Canvas Preview
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(320.dp)
-                                .background(Color(0xFFE2E8F0), RoundedCornerShape(12.dp))
-                                .padding(12.dp)
-                        ) {
-                            // White A4 Sheet simulation (ratio 1:1.414)
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .aspectRatio(1f / 1.414f)
-                                    .shadow(6.dp, RoundedCornerShape(4.dp))
-                                    .background(Color.White, RoundedCornerShape(4.dp))
-                                    .padding(8.dp)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFFE0F2FE)
+                    ) {
+                        Text(
+                            text = "معاينة ثابتة",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryBlue,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                // Live Preview Box
+                LiveCardPreviewBox(
+                    template = template,
+                    bgBitmap = bgBitmap,
+                    logoBitmap = logoBitmap,
+                    sampleCard = sampleCard,
+                    boxHeight = 104.dp
+                )
+
+                // Wide Green PDF Preview & Print Button
+                Button(
+                    onClick = { showA4PreviewDialog = true },
+                    enabled = !isExportingPdf,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF16A34A),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("export_pdf_button")
+                ) {
+                    if (isExportingPdf) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    } else {
+                        Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "معاينة وطباعة PDF",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        }
+    }
+
+    // Delete Confirmation Dialog
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("حذف التصميم [${template.templateName}]؟", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "هل تريد حذف هذا التصميم نهائياً من قائمة القوالب المحفوظة؟",
+                    fontSize = 13.sp,
+                    color = TextSecondaryLight
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteCardTemplate(template)
+                        template = CardTemplateEntity(userId = currentUser?.id ?: "")
+                        showDeleteConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                ) {
+                    Text("نعم، احذف")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDeleteConfirm = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // Saved Templates & Backgrounds Gallery Dialog
+    if (showSavedGalleryDialog) {
+        SavedTemplatesGalleryDialog(
+            templates = savedTemplates,
+            onDismiss = { showSavedGalleryDialog = false },
+            onLoadFullTemplate = { chosen ->
+                template = chosen
+                showSavedGalleryDialog = false
+                Toast.makeText(context, "تم تحميل القالب [${chosen.templateName}] ✓", Toast.LENGTH_SHORT).show()
+            },
+            onApplyBackgroundOnly = { chosen ->
+                template = template.copy(
+                    bgImageUri = chosen.bgImageUri,
+                    enableBackground = chosen.bgImageUri.isNotBlank(),
+                    categoryChip = chosen.categoryChip
+                )
+                showSavedGalleryDialog = false
+                Toast.makeText(context, "تم تطبيق خلفية [${chosen.templateName}] ✓", Toast.LENGTH_SHORT).show()
+            },
+            onDeleteTemplate = { chosen ->
+                viewModel.deleteCardTemplate(chosen)
+            }
+        )
+    }
+
+    // A4 Preview & Phone PDF Export Dialog
+    if (showA4PreviewDialog) {
+        val sampleBatch = remember(template) {
+            CardPdfGenerator.generateSampleCards(template)
+        }
+        A4SheetPreviewDialog(
+            template = template,
+            bgBitmap = bgBitmap,
+            logoBitmap = logoBitmap,
+            cards = sampleBatch,
+            onDismiss = { showA4PreviewDialog = false },
+            onExportAndOpenPdf = {
+                showA4PreviewDialog = false
+                isExportingPdf = true
+                scope.launch(Dispatchers.IO) {
+                    val file = CardPdfGenerator.generateA4CardsPdf(context, template, sampleBatch)
+                    withContext(Dispatchers.Main) {
+                        isExportingPdf = false
+                        if (file != null) {
+                            Toast.makeText(context, "تم توليد ملف PDF بنجاح ✓", Toast.LENGTH_SHORT).show()
+                            CardPdfGenerator.openPdfOnDevice(context, file)
+                        } else {
+                            Toast.makeText(context, "تعذر إنشاء ملف PDF", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SavedTemplatesGalleryDialog(
+    templates: List<CardTemplateEntity>,
+    onDismiss: () -> Unit,
+    onLoadFullTemplate: (CardTemplateEntity) -> Unit,
+    onApplyBackgroundOnly: (CardTemplateEntity) -> Unit,
+    onDeleteTemplate: (CardTemplateEntity) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "القوالب والخلفيات المحفوظة (${templates.size})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = PrimaryNavy
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "إغلاق")
+                    }
+                }
+
+                if (templates.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 28.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "لا توجد قوالب محفوظة بعد.\nاحفظ تصميماً بالخلفية من الشاشة الرئيسية ليظهر هنا.",
+                            fontSize = 12.sp,
+                            color = TextSecondaryLight
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(templates, key = { it.id }) { item ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFF8FAFC),
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier.fillMaxSize(),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    for (r in 0 until rowsCount) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().weight(1f),
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = item.templateName,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = PrimaryNavy,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${item.categoryChip} • ${item.columnsPerPage}×${item.rowsPerPage} (${item.cardsCount} كرت)",
+                                                fontSize = 11.sp,
+                                                color = TextSecondaryLight
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onDeleteTemplate(item) },
+                                            modifier = Modifier.size(30.dp)
                                         ) {
-                                            for (c in 0 until columnsCount) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .fillMaxHeight()
-                                                        .border(0.5.dp, Color(0xFF94A3B8), RoundedCornerShape(2.dp))
-                                                        .background(Color(0xFFF1F5F9)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Column(
-                                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                                        verticalArrangement = Arrangement.Center
-                                                    ) {
-                                                        Text(
-                                                            text = selectedProfileName.take(6),
-                                                            fontSize = 6.sp,
-                                                            color = PrimaryNavy,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                        Text(
-                                                            text = "PIN: ****${(r * columnsCount + c + 1) % 99}",
-                                                            fontSize = 5.sp,
-                                                            fontFamily = FontFamily.Monospace,
-                                                            color = PrimaryBlue
-                                                        )
-                                                    }
-                                                }
+                                            Icon(
+                                                Icons.Default.DeleteOutline,
+                                                contentDescription = "حذف",
+                                                tint = Color(0xFFDC2626),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { onLoadFullTemplate(item) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1f).height(34.dp)
+                                        ) {
+                                            Text("تحميل القالب كاملاً", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        if (item.bgImageUri.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = { onApplyBackgroundOnly(item) },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.weight(1f).height(34.dp)
+                                            ) {
+                                                Text("تطبيق الخلفية فقط", fontSize = 11.sp)
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-
-                        // Grid Columns and Rows Controllers
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "عدد الأعمدة في الصفحة: $columnsCount", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    listOf(2, 3, 4).forEach { col ->
-                                        FilterChip(
-                                            selected = columnsCount == col,
-                                            onClick = { columnsCount = col },
-                                            label = { Text("$col أعمدة", fontSize = 11.sp) }
-                                        )
-                                    }
-                                }
-                            }
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "عدد الصفوف في الصفحة: $rowsCount", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    listOf(4, 5, 8, 10).forEach { r ->
-                                        FilterChip(
-                                            selected = rowsCount == r,
-                                            onClick = { rowsCount = r },
-                                            label = { Text("$r صفوف", fontSize = 11.sp) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = "إجمالي الكروت في كل ورقة A4: ${columnsCount * rowsCount} كرت",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = PrimaryBlue
-                        )
-
-                        // Export to PDF Button
-                        Button(
-                            onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    val pdfFile = generateA4Pdf(
-                                        context = context,
-                                        systemName = selectedSystem.title,
-                                        profileName = selectedProfileName,
-                                        headerTitle = networkHeaderTitle,
-                                        priceTitle = profilePriceText,
-                                        cols = columnsCount,
-                                        rows = rowsCount
-                                    )
-                                    withContext(Dispatchers.Main) {
-                                        if (pdfFile != null) {
-                                            Toast.makeText(context, "تم توليد وتصدير ملف PDF بنجاح في مجلد التطبيق ✓", Toast.LENGTH_LONG).show()
-                                            openOrSharePdf(context, pdfFile)
-                                        } else {
-                                            Toast.makeText(context, "فشل إنشاء ملف PDF", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("export_pdf_button")
-                        ) {
-                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("توليد وتصدير ملف الطباعة PDF 🖨️", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        }
                     }
                 }
             }
         }
-    }
-}
-
-private fun generateA4Pdf(
-    context: Context,
-    systemName: String,
-    profileName: String,
-    headerTitle: String,
-    priceTitle: String,
-    cols: Int,
-    rows: Int
-): File? {
-    try {
-        val doc = PdfDocument()
-        // Standard A4 size in 72 DPI points: 595 x 842
-        val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
-        val page = doc.startPage(pageInfo)
-        val canvas = page.canvas
-
-        val paint = Paint().apply {
-            isAntiAlias = true
-        }
-
-        val margin = 20f
-        val availableW = 595f - (2 * margin)
-        val availableH = 842f - (2 * margin) - 40f // leave 40pt for page header
-
-        val cardW = availableW / cols
-        val cardH = availableH / rows
-
-        // Page Header
-        paint.color = android.graphics.Color.DKGRAY
-        paint.textSize = 10f
-        paint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("TALAL PRO Network System - $systemName - باقة [$profileName]", 595f - margin, 18f, paint)
-
-        val totalCards = cols * rows
-        var cardIndex = 1
-
-        for (r in 0 until rows) {
-            for (c in 0 until cols) {
-                val left = margin + (c * cardW) + 2
-                val top = 30f + margin + (r * cardH) + 2
-                val right = left + cardW - 4
-                val bottom = top + cardH - 4
-
-                // Draw Card Outer Frame
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = 1f
-                paint.color = android.graphics.Color.LTGRAY
-                canvas.drawRect(left, top, right, bottom, paint)
-
-                // Draw Card Header
-                paint.style = Paint.Style.FILL
-                paint.color = android.graphics.Color.rgb(15, 23, 42)
-                paint.textSize = 8f
-                paint.textAlign = Paint.Align.CENTER
-                canvas.drawText(headerTitle, (left + right) / 2f, top + 14f, paint)
-
-                // Draw Profile name
-                paint.color = android.graphics.Color.rgb(2, 132, 199)
-                paint.textSize = 7f
-                canvas.drawText(profileName, (left + right) / 2f, top + 24f, paint)
-
-                // Draw PIN Box
-                val pinBoxTop = top + (cardH * 0.45f)
-                paint.style = Paint.Style.FILL
-                paint.color = android.graphics.Color.rgb(241, 245, 249)
-                canvas.drawRect(left + 8, pinBoxTop, right - 8, pinBoxTop + 18, paint)
-
-                paint.color = android.graphics.Color.BLACK
-                paint.textSize = 9f
-                paint.isFakeBoldText = true
-                val dummyPin = "PIN: %08d".format(cardIndex * 7139 % 99999999)
-                canvas.drawText(dummyPin, (left + right) / 2f, pinBoxTop + 13f, paint)
-                paint.isFakeBoldText = false
-
-                // Draw Footer Price
-                paint.color = android.graphics.Color.GRAY
-                paint.textSize = 6f
-                canvas.drawText(priceTitle, (left + right) / 2f, bottom - 6f, paint)
-
-                cardIndex++
-            }
-        }
-
-        doc.finishPage(page)
-
-        // Save into app documents folder
-        val appFolder = File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "TalalPro/Cards")
-        if (!appFolder.exists()) {
-            appFolder.mkdirs()
-        }
-        val file = File(appFolder, "TalalPro_Cards_${System.currentTimeMillis()}.pdf")
-        val out = FileOutputStream(file)
-        doc.writeTo(out)
-        doc.close()
-        out.close()
-        return file
-    } catch (e: Exception) {
-        e.printStackTrace()
-        return null
-    }
-}
-
-private fun openOrSharePdf(context: Context, file: File) {
-    try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/pdf")
-            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(Intent.createChooser(intent, "عرض وطباعة ملف الكروت PDF"))
-    } catch (e: Exception) {
-        Toast.makeText(context, "تم حفظ الملف في: ${file.absolutePath}", Toast.LENGTH_LONG).show()
     }
 }

@@ -293,6 +293,21 @@ class TalalProViewModel(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // ================= CARD DESIGNER & TEMPLATE SYNC STATES =================
+    val cardTemplates: StateFlow<List<CardTemplateEntity>> = _currentUser.flatMapLatest { user ->
+        if (user != null) {
+            repository.getAllCardTemplates(user.id)
+        } else {
+            repository.getAllCardTemplates("")
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val activeDesignerRouter = MutableStateFlow<RouterEntity?>(null)
+    val isRefreshingDesignerProfiles = MutableStateFlow(false)
+    val designerProfilesDisconnected = MutableStateFlow(false)
+    val lastGeneratedUmBatch = MutableStateFlow<List<GeneratedCardPrintItem>>(emptyList())
+    val lastGeneratedHotspotBatch = MutableStateFlow<List<GeneratedCardPrintItem>>(emptyList())
+
     // ================= ACTIVE CONNECTED USERS / DEVICES STATES =================
     val selectedActiveRouter = MutableStateFlow<RouterEntity?>(null)
     val detailedActiveDevices = MutableStateFlow<List<ActiveDeviceEntity>>(emptyList())
@@ -876,17 +891,35 @@ class TalalProViewModel(
         viewModelScope.launch {
             isSyncingUserManager.value = true
             var addedCount = 0
+            val generatedList = mutableListOf<GeneratedCardPrintItem>()
             val rnd = Random()
             val chars = "1234567890"
+            val batchNum = "B-${(1000 + rnd.nextInt(8999))}"
+            val safeLen = length.coerceIn(3, 18)
             for (i in 1..count) {
                 val sb = StringBuilder()
-                for (j in 1..length) {
+                val remaining = (safeLen - prefix.length).coerceAtLeast(1)
+                for (j in 1..remaining) {
                     sb.append(chars[rnd.nextInt(chars.length)])
                 }
                 val uName = "$prefix$sb"
                 val res = repository.addUserManagerCard(router, uName, uName, profile, "Batch-$price")
-                if (res.isSuccess) addedCount++
+                if (res.isSuccess) {
+                    addedCount++
+                    generatedList.add(
+                        GeneratedCardPrintItem(
+                            username = uName,
+                            password = uName,
+                            profileName = profile,
+                            price = price,
+                            serial = "UM-${10000 + i}",
+                            paymentNumber = batchNum,
+                            posName = router.name
+                        )
+                    )
+                }
             }
+            lastGeneratedUmBatch.value = generatedList
             snackbarMessage.value = "تم توليد وإضافة $addedCount كرت يوزرمانجر بنجاح"
             syncUserManagerData(router)
             isSyncingUserManager.value = false
@@ -1010,22 +1043,41 @@ class TalalProViewModel(
         profile: String,
         length: Int,
         limitUptime: String,
-        limitBytes: String
+        limitBytes: String,
+        priceLabel: String = ""
     ) {
         viewModelScope.launch {
             isSyncingHotspot.value = true
             var addedCount = 0
+            val generatedList = mutableListOf<GeneratedCardPrintItem>()
             val rnd = Random()
             val chars = "1234567890"
+            val batchNum = "HS-${(1000 + rnd.nextInt(8999))}"
+            val safeLen = length.coerceIn(3, 18)
             for (i in 1..count) {
                 val sb = StringBuilder()
-                for (j in 1..length) {
+                val remaining = (safeLen - prefix.length).coerceAtLeast(1)
+                for (j in 1..remaining) {
                     sb.append(chars[rnd.nextInt(chars.length)])
                 }
                 val uName = "$prefix$sb"
                 val res = repository.addHotspotUser(router, uName, uName, profile, "HotspotBatch", limitUptime, limitBytes)
-                if (res.isSuccess) addedCount++
+                if (res.isSuccess) {
+                    addedCount++
+                    generatedList.add(
+                        GeneratedCardPrintItem(
+                            username = uName,
+                            password = uName,
+                            profileName = profile,
+                            price = priceLabel.ifBlank { profile },
+                            serial = "HS-${10000 + i}",
+                            paymentNumber = batchNum,
+                            posName = router.name
+                        )
+                    )
+                }
             }
+            lastGeneratedHotspotBatch.value = generatedList
             snackbarMessage.value = "تم توليد وإضافة $addedCount كرت هوتسبوت بنجاح"
             syncHotspotData(router)
             isSyncingHotspot.value = false
@@ -2021,17 +2073,58 @@ class TalalProViewModel(
         )
     }
 
-    // ================= CARD TEMPLATES =================
+    // ================= CARD TEMPLATES & ROUTER PROFILES =================
 
     suspend fun getCardTemplateSync(systemType: String, profileName: String): CardTemplateEntity? {
         val uid = _currentUser.value?.id ?: ""
         return repository.getCardTemplateForProfile(systemType, profileName, uid).firstOrNull()
     }
 
-    fun saveCardTemplate(template: CardTemplateEntity) {
+    fun saveCardTemplate(template: CardTemplateEntity, onSaved: ((Long) -> Unit)? = null) {
         viewModelScope.launch {
-            repository.saveCardTemplate(template)
-            snackbarMessage.value = "تم حفظ قالب الكروت بنجاح"
+            val uid = _currentUser.value?.id ?: ""
+            val savedId = repository.saveCardTemplate(template.copy(userId = uid))
+            snackbarMessage.value = "تم حفظ تصميم القالب [${template.templateName}] بنجاح ✓"
+            onSaved?.invoke(savedId)
+        }
+    }
+
+    fun deleteCardTemplate(template: CardTemplateEntity) {
+        viewModelScope.launch {
+            if (template.id > 0L) {
+                repository.deleteCardTemplateById(template.id)
+                snackbarMessage.value = "تم حذف التصميم [${template.templateName}] ✓"
+            } else {
+                snackbarMessage.value = "تمت تهيئة تصميم جديد"
+            }
+        }
+    }
+
+    fun refreshProfilesForCardDesigner(router: RouterEntity?) {
+        val target = router ?: activeDesignerRouter.value ?: allRouters.value.firstOrNull()
+        if (target == null) {
+            designerProfilesDisconnected.value = true
+            snackbarMessage.value = "اتصل بالراوتر لجلب الباقات الحقيقية"
+            return
+        }
+        activeDesignerRouter.value = target
+        selectedUserManagerRouter.value = target
+        selectedHotspotRouter.value = target
+
+        viewModelScope.launch {
+            isRefreshingDesignerProfiles.value = true
+            val umOk = repository.syncUserManager(target)
+            val hsOk = repository.syncHotspot(target)
+            if (umOk || hsOk) {
+                designerProfilesDisconnected.value = false
+                val umCount = userManagerProfiles.value.size
+                val hsCount = hotspotProfiles.value.size
+                snackbarMessage.value = "تم تحديث الباقات من RouterOS (يوزرمانجر: $umCount | هوتسبوت: $hsCount) ✓"
+            } else {
+                designerProfilesDisconnected.value = true
+                snackbarMessage.value = "تعذر الاتصال بالراوتر [${target.name}] — اتصل بالراوتر لجلب الباقات الحقيقية"
+            }
+            isRefreshingDesignerProfiles.value = false
         }
     }
 

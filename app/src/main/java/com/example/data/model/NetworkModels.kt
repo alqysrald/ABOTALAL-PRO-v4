@@ -342,32 +342,105 @@ data class CardTemplateEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val userId: String = "",
-    val systemType: String = "USER_MANAGER", // "USER_MANAGER" or "HOTSPOT"
+    val systemType: String = "USER_MANAGER", // "USER_MANAGER" or "HOTSPOT" or "BOTH"
     val profileName: String = "default",
-    val templateName: String = "قالب كروت افتراضي",
+    val templateName: String = "Default_Design",
+    val categoryChip: String = "فئة 100 ريال",
+    val linkedUmProfile: String = "",
+    val linkedHotspotProfile: String = "",
+
+    // Page Data & Print Settings
+    val columnsPerPage: Int = 3,
+    val rowsPerPage: Int = 17,
+    val cardsCount: Int = 51,
+    val usernameDigits: Int = 10,
+    val scaleToA4: Boolean = true,
+    val marginHorizontalMm: Float = 0.0f,
+    val marginVerticalMm: Float = 0.0f,
+    val showPageNote: Boolean = false,
+    val pageNote: String = "",
+
+    // Background
+    val enableBackground: Boolean = false,
     val bgImageUri: String = "",
-    val pinXPercent: Float = 50f, // 0..100 horizontal %
-    val pinYPercent: Float = 60f, // 0..100 vertical %
-    val pinFontSize: Int = 16,
-    val pinColorHex: String = "#000000",
-    val userXPercent: Float = 50f,
-    val userYPercent: Float = 40f,
-    val userFontSize: Int = 14,
-    val userColorHex: String = "#1E3A8A",
+
+    // Card Borders
+    val enableBorder: Boolean = true,
+    val borderColorHex: String = "#000000",
+    val borderSizeMm: Float = 0.3f,
+
+    // Card Elements & Font
     val showUsername: Boolean = true,
-    val showPasswordOnly: Boolean = false, // Single PIN voucher
-    val qrXPercent: Float = 18f,
-    val qrYPercent: Float = 50f,
-    val showQrCode: Boolean = true,
-    val qrSizeDp: Float = 42f,
-    val priceXPercent: Float = 82f,
-    val priceYPercent: Float = 85f,
-    val showPrice: Boolean = true,
-    val priceTagText: String = "",
-    val columnsPerPage: Int = 2, // A4 layout columns
-    val rowsPerPage: Int = 5,   // A4 layout rows (total 10 cards/page)
-    val networkTitle: String = "TALAL PRO NETWORK",
-    val instructionText: String = "أدخل كود الكرت في صفحة تسجيل الدخول"
+    val enableCustomTitle: Boolean = false,
+    val customTitleText: String = "",
+    val fontColorHex: String = "#111827",
+    val fontSize: Float = 10.0f,
+    val isFontBold: Boolean = true,
+
+    // Page Number & Manual Username Coordinates
+    val showPageNumber: Boolean = true,
+    val userXPercent: Float = 50f,
+    val userYPercent: Float = 50f,
+
+    // Password Settings
+    val showPassword: Boolean = false,
+    val passwordText: String = "{password}",
+    val passwordFontSize: Float = 9.0f,
+    val passwordXPercent: Float = 50f,
+    val passwordYPercent: Float = 66f,
+
+    // Payment Number Settings
+    val showPayment: Boolean = false,
+    val paymentText: String = "{payment}",
+    val paymentFontSize: Float = 9.0f,
+    val paymentXPercent: Float = 25f,
+    val paymentYPercent: Float = 84f,
+
+    // Serial Number Settings
+    val showSerial: Boolean = false,
+    val serialText: String = "{serial}",
+    val serialFontSize: Float = 9.0f,
+    val serialXPercent: Float = 75f,
+    val serialYPercent: Float = 84f,
+
+    // Package Price Settings
+    val showPrice: Boolean = false,
+    val priceTagText: String = "{price}",
+    val priceFontSize: Float = 9.0f,
+    val priceXPercent: Float = 78f,
+    val priceYPercent: Float = 20f,
+
+    // Point of Sale (POS) Settings
+    val showPos: Boolean = false,
+    val posText: String = "{pos}",
+    val posFontSize: Float = 9.0f,
+    val posXPercent: Float = 22f,
+    val posYPercent: Float = 20f,
+
+    // Barcode Settings
+    val enableBarcode: Boolean = false,
+    val barcodeXPercent: Float = 50f,
+    val barcodeYPercent: Float = 78f,
+
+    // Logo Settings
+    val enableLogo: Boolean = false,
+    val logoImageUri: String = "",
+    val logoWidthMm: Float = 10.0f,
+    val logoHeightMm: Float = 10.0f,
+    val logoXPercent: Float = 14f,
+    val logoYPercent: Float = 24f,
+
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class GeneratedCardPrintItem(
+    val username: String,
+    val password: String,
+    val profileName: String = "default",
+    val price: String = "",
+    val serial: String = "",
+    val paymentNumber: String = "",
+    val posName: String = "TALAL PRO"
 )
 
 // ================= MIKROTIK VLAN MANAGEMENT =================

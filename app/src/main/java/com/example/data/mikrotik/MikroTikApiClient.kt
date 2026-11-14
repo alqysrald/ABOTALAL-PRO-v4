@@ -427,6 +427,9 @@ class MikroTikApiClient(
             if (!res.isSuccess || res.results.isEmpty()) {
                 res = executeCommand(inStream, outStream, listOf("/user-manager/profile/print"))
             }
+            if (!res.isSuccess || res.results.isEmpty()) {
+                res = executeCommand(inStream, outStream, listOf("/user-manager/user/group/print"))
+            }
             res.results
         } catch (e: Exception) {
             Log.e(tag, "Failed to get user-manager profiles", e)
