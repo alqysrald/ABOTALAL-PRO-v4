@@ -1,11 +1,15 @@
 package com.example
 
+import android.Manifest
 import android.app.Activity
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -29,6 +33,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.service.RouterMonitorManager
 import com.example.ui.ScreenTab
 import com.example.ui.TalalProViewModel
 import com.example.ui.components.SideDrawerContent
@@ -99,6 +104,29 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && RouterMonitorManager.isEnabled(context)) {
+            RouterMonitorManager.startService(context)
+        }
+    }
+
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn) {
+            RouterMonitorManager.ensureInitialized(context)
+            if (RouterMonitorManager.isEnabled(context)) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    !RouterMonitorManager.hasNotificationPermission(context)
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    RouterMonitorManager.startService(context)
+                }
+            }
+        }
+    }
 
     LaunchedEffect(snackbarMsg) {
         if (snackbarMsg != null) {

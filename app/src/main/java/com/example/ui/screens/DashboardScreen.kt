@@ -27,6 +27,8 @@ import com.example.data.model.NetworkDeviceEntity
 import com.example.data.model.RouterEntity
 import com.example.ui.ScreenTab
 import com.example.ui.TalalProViewModel
+import com.example.ui.dialogs.BackgroundMonitorControlCard
+import com.example.ui.dialogs.BackgroundMonitorSettingsDialog
 import com.example.ui.theme.*
 
 @Composable
@@ -44,6 +46,7 @@ fun DashboardScreen(
     val onlineRoutersCount by viewModel.onlineRoutersCount.collectAsState()
 
     var showHelpAccordion by remember { mutableStateOf(false) }
+    var showBgMonitorSettings by remember { mutableStateOf(false) }
 
     val activeUsersTotal = routers.sumOf { it.activeHotspotUsers + it.activePppoeUsers }
 
@@ -215,6 +218,14 @@ fun DashboardScreen(
                     }
                 }
             }
+        }
+
+        // Background Monitoring & Luxury Notification Card
+        item {
+            BackgroundMonitorControlCard(
+                routers = routers,
+                onOpenSettings = { showBgMonitorSettings = true }
+            )
         }
 
         // 3. 3 Grid Metric Cards (Matches Screenshot 1)
@@ -581,6 +592,13 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+
+    if (showBgMonitorSettings) {
+        BackgroundMonitorSettingsDialog(
+            routers = routers,
+            onDismiss = { showBgMonitorSettings = false }
+        )
     }
 }
 

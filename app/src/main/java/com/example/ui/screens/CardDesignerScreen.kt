@@ -13,12 +13,15 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -29,6 +32,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +50,7 @@ import com.example.ui.utils.CardPdfGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -96,6 +102,10 @@ fun CardDesignerScreen(
         }
     }
 
+    // Retained asset files inside internal app storage (persist across templates & restarts)
+    var savedBackgroundFiles by remember { mutableStateOf(CardPdfGenerator.listSavedBackgrounds(context)) }
+    var savedLogoFiles by remember { mutableStateOf(CardPdfGenerator.listSavedLogos(context)) }
+
     // Cached bitmaps for Live Preview
     var bgBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var logoBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -123,13 +133,19 @@ fun CardDesignerScreen(
         if (uri != null) {
             scope.launch(Dispatchers.IO) {
                 val savedPath = CardPdfGenerator.persistPickedImage(context, uri, "card_bg")
+                val updatedFiles = CardPdfGenerator.listSavedBackgrounds(context)
                 withContext(Dispatchers.Main) {
+                    savedBackgroundFiles = updatedFiles
                     if (savedPath != null) {
-                        template = template.copy(
+                        val updatedTmpl = template.copy(
                             bgImageUri = savedPath,
                             enableBackground = true
                         )
-                        Toast.makeText(context, "تم رفع وحفظ خلفية الكرت بنجاح ✓", Toast.LENGTH_SHORT).show()
+                        template = updatedTmpl
+                        if (updatedTmpl.id > 0L) {
+                            viewModel.persistTemplateCoordinates(updatedTmpl, showToast = false)
+                        }
+                        Toast.makeText(context, "تم رفع والاحتفاظ بخلفية الكرت داخل البرنامج ✓", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "تعذر قراءة الصورة المختارة", Toast.LENGTH_SHORT).show()
                     }
@@ -144,13 +160,19 @@ fun CardDesignerScreen(
         if (uri != null) {
             scope.launch(Dispatchers.IO) {
                 val savedPath = CardPdfGenerator.persistPickedImage(context, uri, "card_logo")
+                val updatedLogos = CardPdfGenerator.listSavedLogos(context)
                 withContext(Dispatchers.Main) {
+                    savedLogoFiles = updatedLogos
                     if (savedPath != null) {
-                        template = template.copy(
+                        val updatedTmpl = template.copy(
                             logoImageUri = savedPath,
                             enableLogo = true
                         )
-                        Toast.makeText(context, "تم استيراد شعار الكرت بنجاح ✓", Toast.LENGTH_SHORT).show()
+                        template = updatedTmpl
+                        if (updatedTmpl.id > 0L) {
+                            viewModel.persistTemplateCoordinates(updatedTmpl, showToast = false)
+                        }
+                        Toast.makeText(context, "تم استيراد والاحتفاظ بشعار الكرت ✓", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "تعذر قراءة الشعار المختار", Toast.LENGTH_SHORT).show()
                     }
@@ -159,11 +181,49 @@ fun CardDesignerScreen(
         }
     }
 
-    // Dialog states
+    // Dialog & Interactive Touch States
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showSavedGalleryDialog by remember { mutableStateOf(false) }
     var showA4PreviewDialog by remember { mutableStateOf(false) }
+    var showExpandedTouchEditor by remember { mutableStateOf(false) }
     var isExportingPdf by remember { mutableStateOf(false) }
+    var isPositionLocked by remember { mutableStateOf(false) }
+    var activeDragElement by remember { mutableStateOf(CardDragElement.USERNAME) }
+
+    fun applyElementMove(elem: CardDragElement, nx: Float, ny: Float) {
+        val rx = (nx * 10f).toInt() / 10f
+        val ry = (ny * 10f).toInt() / 10f
+        template = when (elem) {
+            CardDragElement.USERNAME -> template.copy(userXPercent = rx, userYPercent = ry)
+            CardDragElement.PASSWORD -> template.copy(passwordXPercent = rx, passwordYPercent = ry)
+            CardDragElement.PAYMENT -> template.copy(paymentXPercent = rx, paymentYPercent = ry)
+            CardDragElement.SERIAL -> template.copy(serialXPercent = rx, serialYPercent = ry)
+            CardDragElement.PRICE -> template.copy(priceXPercent = rx, priceYPercent = ry)
+            CardDragElement.POS -> template.copy(posXPercent = rx, posYPercent = ry)
+            CardDragElement.BARCODE -> template.copy(barcodeXPercent = rx, barcodeYPercent = ry)
+            CardDragElement.LOGO -> template.copy(logoXPercent = rx, logoYPercent = ry)
+        }
+    }
+
+    fun persistCurrentTemplate(showMsg: Boolean) {
+        val systemResolved = when {
+            template.linkedUmProfile.isNotBlank() && template.linkedHotspotProfile.isNotBlank() -> "BOTH"
+            template.linkedHotspotProfile.isNotBlank() -> "HOTSPOT"
+            else -> "USER_MANAGER"
+        }
+        val primaryProfile = template.linkedUmProfile.ifBlank {
+            template.linkedHotspotProfile.ifBlank { "default" }
+        }
+        val toSave = template.copy(
+            userId = currentUser?.id ?: "",
+            templateName = template.templateName.ifBlank { "Default_Design" },
+            systemType = systemResolved,
+            profileName = primaryProfile
+        )
+        viewModel.persistTemplateCoordinates(toSave, showToast = showMsg) { newId ->
+            template = toSave.copy(id = newId)
+        }
+    }
 
     // Live sample card reflecting digit length & category price
     val sampleCard = remember(
@@ -759,7 +819,7 @@ fun CardDesignerScreen(
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("مسح", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("إزالة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -773,15 +833,83 @@ fun CardDesignerScreen(
                             modifier = Modifier
                                 .weight(1.4f)
                                 .height(48.dp)
+                                .testTag("pick_card_bg_button")
                         ) {
                             Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("اختيار صورة ورفعها", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("اختيار صورة وحفظها بالبرنامج", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Retained Background Assets Gallery Strip inside App Storage
+                    if (savedBackgroundFiles.isNotEmpty()) {
+                        Text(
+                            text = "الخلفيات المحتفظ بها داخل البرنامج (${savedBackgroundFiles.size}) — اضغط للتطبيق:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryNavy
+                        )
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(savedBackgroundFiles, key = { it.absolutePath }) { bgFile ->
+                                val isActiveBg = template.bgImageUri == bgFile.absolutePath && template.enableBackground
+                                val thumbBmp = remember(bgFile.absolutePath) {
+                                    CardPdfGenerator.loadBitmapFromPathOrUri(context, bgFile.absolutePath)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 96.dp, height = 56.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .border(
+                                            width = if (isActiveBg) 2.5.dp else 1.dp,
+                                            color = if (isActiveBg) Color(0xFF0D9488) else Color(0xFFCBD5E1),
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        .clickable {
+                                            template = template.copy(
+                                                bgImageUri = bgFile.absolutePath,
+                                                enableBackground = true
+                                            )
+                                            Toast.makeText(context, "تم تطبيق الخلفية المحفوظة ✓", Toast.LENGTH_SHORT).show()
+                                        }
+                                ) {
+                                    if (thumbBmp != null) {
+                                        Image(
+                                            bitmap = thumbBmp.asImageBitmap(),
+                                            contentDescription = "خلفية محفوظة",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    // Delete thumbnail asset button
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(2.dp)
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Black.copy(alpha = 0.65f))
+                                            .clickable {
+                                                CardPdfGenerator.deleteSavedAsset(bgFile.absolutePath)
+                                                savedBackgroundFiles = CardPdfGenerator.listSavedBackgrounds(context)
+                                                if (template.bgImageUri == bgFile.absolutePath) {
+                                                    template = template.copy(bgImageUri = "", enableBackground = false)
+                                                }
+                                            }
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "حذف الخلفية", tint = Color.White, modifier = Modifier.size(12.dp))
+                                    }
+                                }
+                            }
                         }
                     }
 
                     Text(
-                        text = "تحفظ الخلفية ضمن التصميم على الخادم، وتملأ مساحة الكرت بدون حواف إضافية",
+                        text = "تُحفظ الخلفية نهائياً داخل ذاكرة البرنامج وتُدرج تلقائياً في القوالب المحفوظة وملفات PDF بدون حواف إضافية.",
                         fontSize = 11.sp,
                         color = TextSecondaryLight,
                         lineHeight = 16.sp
@@ -1184,13 +1312,24 @@ fun CardDesignerScreen(
             }
         }
 
-        // ================= STICKY PREVIEW FOOTER (منطقة المعاينة الثابتة) =================
+        // ================= STICKY PREVIEW FOOTER (منطقة المعاينة والتحريك التفاعلي باللمس) =================
         Surface(
             color = Color.White,
             shadowElevation = 12.dp,
             border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
             modifier = Modifier.fillMaxWidth()
         ) {
+            val (curElemX, curElemY) = when (activeDragElement) {
+                CardDragElement.USERNAME -> template.userXPercent to template.userYPercent
+                CardDragElement.PASSWORD -> template.passwordXPercent to template.passwordYPercent
+                CardDragElement.PAYMENT -> template.paymentXPercent to template.paymentYPercent
+                CardDragElement.SERIAL -> template.serialXPercent to template.serialYPercent
+                CardDragElement.PRICE -> template.priceXPercent to template.priceYPercent
+                CardDragElement.POS -> template.posXPercent to template.posYPercent
+                CardDragElement.BARCODE -> template.barcodeXPercent to template.barcodeYPercent
+                CardDragElement.LOGO -> template.logoXPercent to template.logoYPercent
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1202,43 +1341,116 @@ fun CardDesignerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
                         Icon(
-                            Icons.Default.Visibility,
-                            contentDescription = "معاينة الكرت",
-                            tint = PrimaryBlue,
+                            Icons.Default.TouchApp,
+                            contentDescription = "تحريك باللمس",
+                            tint = if (isPositionLocked) Color(0xFF16A34A) else PrimaryBlue,
                             modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "معاينة الكرت",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            color = PrimaryNavy
-                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Column {
+                            Text(
+                                text = if (isPositionLocked) "معاينة الكرت (تم تثبيت الموضع 🔒)" else "اسحب ${activeDragElement.labelAr} باللمس ✋",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = PrimaryNavy,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "X: ${curElemX.toInt()}% • Y: ${curElemY.toInt()}% (متطابق مع PDF)",
+                                fontSize = 10.sp,
+                                color = PrimaryBlue
+                            )
+                        }
                     }
 
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = Color(0xFFE0F2FE)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "معاينة ثابتة",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = PrimaryBlue,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                        // Lock / Fix & Persist Position Button
+                        Surface(
+                            onClick = {
+                                val nextLocked = !isPositionLocked
+                                isPositionLocked = nextLocked
+                                if (nextLocked) {
+                                    persistCurrentTemplate(showMsg = true)
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isPositionLocked) Color(0xFFDCFCE7) else Color(0xFFE0F2FE),
+                            border = BorderStroke(1.dp, if (isPositionLocked) Color(0xFF16A34A) else PrimaryBlue),
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .testTag("lock_card_positions_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPositionLocked) Icons.Default.Lock else Icons.Default.PushPin,
+                                    contentDescription = "تثبيت الموضع",
+                                    tint = if (isPositionLocked) Color(0xFF15803D) else PrimaryBlue,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = if (isPositionLocked) "مثبت ✓" else "تثبيت وحفظ",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isPositionLocked) Color(0xFF15803D) else PrimaryBlue
+                                )
+                            }
+                        }
+
+                        // Expand Interactive Touch Canvas Button
+                        Surface(
+                            onClick = { showExpandedTouchEditor = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFF1F5F9),
+                            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .testTag("expand_touch_editor_button")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.OpenInFull,
+                                    contentDescription = "تكبير محرر اللمس",
+                                    tint = PrimaryNavy,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Live Preview Box
+                // Live Interactive Touch-Draggable Preview Box
                 LiveCardPreviewBox(
                     template = template,
                     bgBitmap = bgBitmap,
                     logoBitmap = logoBitmap,
                     sampleCard = sampleCard,
-                    boxHeight = 104.dp
+                    boxHeight = 108.dp,
+                    enableTouchDrag = true,
+                    isPositionLocked = isPositionLocked,
+                    activeElement = activeDragElement,
+                    onSelectElement = { activeDragElement = it },
+                    onMoveElement = { elem, nx, ny -> applyElementMove(elem, nx, ny) },
+                    onDragFinished = {
+                        if (template.id > 0L) {
+                            persistCurrentTemplate(showMsg = false)
+                        }
+                    }
                 )
 
                 // Wide Green PDF Preview & Print Button
@@ -1270,6 +1482,102 @@ fun CardDesignerScreen(
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
+                }
+            }
+        }
+    }
+
+    // Expanded Interactive Touch Positioning Canvas Dialog
+    if (showExpandedTouchEditor) {
+        Dialog(onDismissRequest = { showExpandedTouchEditor = false }) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("التحريك التفاعلي باللمس", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = PrimaryNavy)
+                            Text("المس أي عنصر على الكرت واسحبه إلى مكانه الثابت", fontSize = 11.sp, color = TextSecondaryLight)
+                        }
+                        IconButton(onClick = { showExpandedTouchEditor = false }, modifier = Modifier.minimumInteractiveComponentSize()) {
+                            Icon(Icons.Default.Close, contentDescription = "إغلاق")
+                        }
+                    }
+
+                    // Active Element Picker Chips
+                    val enabledElements = listOfNotNull(
+                        CardDragElement.USERNAME.takeIf { template.showUsername },
+                        CardDragElement.PASSWORD.takeIf { template.showPassword },
+                        CardDragElement.PAYMENT.takeIf { template.showPayment },
+                        CardDragElement.SERIAL.takeIf { template.showSerial },
+                        CardDragElement.PRICE.takeIf { template.showPrice },
+                        CardDragElement.POS.takeIf { template.showPos },
+                        CardDragElement.BARCODE.takeIf { template.enableBarcode },
+                        CardDragElement.LOGO.takeIf { template.enableLogo && logoBitmap != null }
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(enabledElements) { elem ->
+                            FilterChip(
+                                selected = activeDragElement == elem,
+                                onClick = { activeDragElement = elem },
+                                label = { Text(elem.labelAr, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+
+                    LiveCardPreviewBox(
+                        template = template,
+                        bgBitmap = bgBitmap,
+                        logoBitmap = logoBitmap,
+                        sampleCard = sampleCard,
+                        boxHeight = 200.dp,
+                        enableTouchDrag = true,
+                        isPositionLocked = isPositionLocked,
+                        activeElement = activeDragElement,
+                        onSelectElement = { activeDragElement = it },
+                        onMoveElement = { elem, nx, ny -> applyElementMove(elem, nx, ny) },
+                        onDragFinished = {
+                            if (template.id > 0L) persistCurrentTemplate(showMsg = false)
+                        }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { isPositionLocked = !isPositionLocked },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f).height(48.dp)
+                        ) {
+                            Icon(if (isPositionLocked) Icons.Default.LockOpen else Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (isPositionLocked) "فتح التحريك" else "قفل الموضع", fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = {
+                                isPositionLocked = true
+                                persistCurrentTemplate(showMsg = true)
+                                showExpandedTouchEditor = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1.2f).height(48.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("تثبيت وحفظ الموضع ✓", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
                 }
             }
         }
@@ -1311,6 +1619,7 @@ fun CardDesignerScreen(
     if (showSavedGalleryDialog) {
         SavedTemplatesGalleryDialog(
             templates = savedTemplates,
+            savedBgFiles = savedBackgroundFiles,
             onDismiss = { showSavedGalleryDialog = false },
             onLoadFullTemplate = { chosen ->
                 template = chosen
@@ -1325,6 +1634,18 @@ fun CardDesignerScreen(
                 )
                 showSavedGalleryDialog = false
                 Toast.makeText(context, "تم تطبيق خلفية [${chosen.templateName}] ✓", Toast.LENGTH_SHORT).show()
+            },
+            onApplySavedFileBackground = { file ->
+                template = template.copy(
+                    bgImageUri = file.absolutePath,
+                    enableBackground = true
+                )
+                showSavedGalleryDialog = false
+                Toast.makeText(context, "تم تطبيق الخلفية المحفوظة ✓", Toast.LENGTH_SHORT).show()
+            },
+            onDeleteSavedFileBackground = { file ->
+                CardPdfGenerator.deleteSavedAsset(file.absolutePath)
+                savedBackgroundFiles = CardPdfGenerator.listSavedBackgrounds(context)
             },
             onDeleteTemplate = { chosen ->
                 viewModel.deleteCardTemplate(chosen)
@@ -1366,11 +1687,15 @@ fun CardDesignerScreen(
 @Composable
 private fun SavedTemplatesGalleryDialog(
     templates: List<CardTemplateEntity>,
+    savedBgFiles: List<File>,
     onDismiss: () -> Unit,
     onLoadFullTemplate: (CardTemplateEntity) -> Unit,
     onApplyBackgroundOnly: (CardTemplateEntity) -> Unit,
+    onApplySavedFileBackground: (File) -> Unit,
+    onDeleteSavedFileBackground: (File) -> Unit,
     onDeleteTemplate: (CardTemplateEntity) -> Unit
 ) {
+    val context = LocalContext.current
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -1392,8 +1717,52 @@ private fun SavedTemplatesGalleryDialog(
                         fontSize = 15.sp,
                         color = PrimaryNavy
                     )
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    IconButton(onClick = onDismiss, modifier = Modifier.minimumInteractiveComponentSize()) {
                         Icon(Icons.Default.Close, contentDescription = "إغلاق")
+                    }
+                }
+
+                if (savedBgFiles.isNotEmpty()) {
+                    Text(
+                        text = "صور الخلفيات المحتفظ بها بالبرنامج (${savedBgFiles.size}):",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0D9488)
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(savedBgFiles, key = { it.absolutePath }) { file ->
+                            val bmp = remember(file.absolutePath) {
+                                CardPdfGenerator.loadBitmapFromPathOrUri(context, file.absolutePath)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 96.dp, height = 56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(1.dp, Color(0xFF0D9488), RoundedCornerShape(10.dp))
+                                    .clickable { onApplySavedFileBackground(file) }
+                            ) {
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = "خلفية محفوظة",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.65f))
+                                        .clickable { onDeleteSavedFileBackground(file) }
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "حذف الصورة", tint = Color.White, modifier = Modifier.size(12.dp))
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1401,11 +1770,11 @@ private fun SavedTemplatesGalleryDialog(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 28.dp),
+                            .padding(vertical = 20.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "لا توجد قوالب محفوظة بعد.\nاحفظ تصميماً بالخلفية من الشاشة الرئيسية ليظهر هنا.",
+                            text = "لا توجد قوالب محفوظة بعد.\nاحفظ تصميماً من الشاشة الرئيسية ليظهر هنا.",
                             fontSize = 12.sp,
                             color = TextSecondaryLight
                         )
@@ -1414,7 +1783,7 @@ private fun SavedTemplatesGalleryDialog(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 360.dp),
+                            .heightIn(max = 320.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(templates, key = { it.id }) { item ->
@@ -1450,7 +1819,7 @@ private fun SavedTemplatesGalleryDialog(
                                         }
                                         IconButton(
                                             onClick = { onDeleteTemplate(item) },
-                                            modifier = Modifier.size(30.dp)
+                                            modifier = Modifier.minimumInteractiveComponentSize()
                                         ) {
                                             Icon(
                                                 Icons.Default.DeleteOutline,
@@ -1470,7 +1839,7 @@ private fun SavedTemplatesGalleryDialog(
                                             colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f).height(34.dp)
+                                            modifier = Modifier.weight(1f).heightIn(min = 40.dp)
                                         ) {
                                             Text("تحميل القالب كاملاً", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         }
@@ -1480,7 +1849,7 @@ private fun SavedTemplatesGalleryDialog(
                                                 onClick = { onApplyBackgroundOnly(item) },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                 shape = RoundedCornerShape(8.dp),
-                                                modifier = Modifier.weight(1f).height(34.dp)
+                                                modifier = Modifier.weight(1f).heightIn(min = 40.dp)
                                             ) {
                                                 Text("تطبيق الخلفية فقط", fontSize = 11.sp)
                                             }

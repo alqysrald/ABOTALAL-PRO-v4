@@ -15,6 +15,7 @@ object NotificationHelper {
 
     private const val CHANNEL_ALERTS_ID = "talal_pro_alerts_channel"
     private const val CHANNEL_MESSAGES_ID = "talal_pro_messages_channel"
+    const val CHANNEL_LIVE_MONITOR_ID = "talal_pro_live_monitor_channel"
 
     fun createNotificationChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -36,9 +37,21 @@ object NotificationHelper {
                 enableVibration(true)
             }
 
+            val liveMonitorChannel = NotificationChannel(
+                CHANNEL_LIVE_MONITOR_ID,
+                "حالة الاتصال والمعالج بالخلفية - TALAL PRO",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "إشعار مستمر لعرض حالة اتصال الراوتر وحمل المعالج والأجهزة بالخلفية"
+                enableVibration(false)
+                setSound(null, null)
+                setShowBadge(false)
+            }
+
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             manager?.createNotificationChannel(alertsChannel)
             manager?.createNotificationChannel(messagesChannel)
+            manager?.createNotificationChannel(liveMonitorChannel)
         }
     }
 

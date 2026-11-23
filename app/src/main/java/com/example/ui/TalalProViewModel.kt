@@ -2143,6 +2143,21 @@ class TalalProViewModel(
         }
     }
 
+    fun persistTemplateCoordinates(
+        template: CardTemplateEntity,
+        showToast: Boolean = true,
+        onSaved: ((Long) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val uid = _currentUser.value?.id ?: ""
+            val savedId = repository.saveCardTemplate(template.copy(userId = uid))
+            if (showToast) {
+                snackbarMessage.value = "تم تثبيت وحفظ مواضع التصميم [${template.templateName}] ✓"
+            }
+            onSaved?.invoke(savedId)
+        }
+    }
+
     fun deleteCardTemplate(template: CardTemplateEntity) {
         viewModelScope.launch {
             if (template.id > 0L) {

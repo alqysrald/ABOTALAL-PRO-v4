@@ -24,9 +24,20 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.Manifest
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import com.example.data.firebase.FirebaseUserAccount
+import com.example.service.RouterMonitorManager
 import com.example.ui.ScreenTab
 import com.example.ui.TalalProViewModel
+import com.example.ui.dialogs.BackgroundMonitorSettingsDialog
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,6 +56,20 @@ fun SideDrawerContent(
     val currentTab by viewModel.currentTab.collectAsState()
     val routers by viewModel.allRouters.collectAsState()
     val devices by viewModel.allDevices.collectAsState()
+    val context = LocalContext.current
+    val monitorState by RouterMonitorManager.state.collectAsState()
+    var showBgSettingsDialog by remember { mutableStateOf(false) }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            RouterMonitorManager.startService(context)
+            Toast.makeText(context, "تم تفعيل إشعار الخلفية ✅", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "يرجى منح صلاحية الإشعارات لعرض إشعار الحالة", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     ModalDrawerSheet(
         drawerContainerColor = Color(0xFFF8FAFC),
@@ -397,6 +422,26 @@ fun SideDrawerContent(
                 }
             )
 
+            DrawerNavTabItem(
+                icon = Icons.Default.NotificationsActive,
+                title = "العمل بالخلفية وإشعار الحالة",
+                isSelected = monitorState.isServiceRunning,
+                badge = if (monitorState.isServiceRunning) "نشط 🟢" else "متوقف",
+                badgeColor = if (monitorState.isServiceRunning) Color(0xFF10B981) else Color(0xFF64748B),
+                onClick = {
+                    if (monitorState.isServiceRunning) {
+                        showBgSettingsDialog = true
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        !RouterMonitorManager.hasNotificationPermission(context)
+                    ) {
+                        notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        RouterMonitorManager.startService(context)
+                        Toast.makeText(context, "تم تشغيل إشعار الخلفية ✅", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+
             DrawerActionItem(
                 icon = Icons.Default.Logout,
                 title = "تسجيل الخروج",
@@ -446,6 +491,13 @@ fun SideDrawerContent(
                 }
             }
         }
+    }
+
+    if (showBgSettingsDialog) {
+        BackgroundMonitorSettingsDialog(
+            routers = routers,
+            onDismiss = { showBgSettingsDialog = false }
+        )
     }
 }
 

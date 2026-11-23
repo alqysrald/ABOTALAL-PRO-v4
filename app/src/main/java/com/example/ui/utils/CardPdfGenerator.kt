@@ -33,24 +33,113 @@ object CardPdfGenerator {
         }
     }
 
+    data class CardSheetMetrics(
+        val cols: Int,
+        val rows: Int,
+        val pageOuterMarginPt: Float,
+        val headerSpacePt: Float,
+        val footerSpacePt: Float,
+        val gapHPt: Float,
+        val gapVPt: Float,
+        val cardWidthPt: Float,
+        val cardHeightPt: Float,
+        val aspectRatio: Float,
+        val scaleFactor: Float
+    )
+
+    fun computeSheetMetrics(template: CardTemplateEntity): CardSheetMetrics {
+        val cols = template.columnsPerPage.coerceIn(1, 12)
+        val rows = template.rowsPerPage.coerceIn(1, 35)
+        val pageOuterMargin = 14f
+        val headerSpace = if (template.showPageNote || template.showPageNumber) 24f else 6f
+        val footerSpace = if (template.showPageNumber) 18f else 6f
+        val gapH = (template.marginHorizontalMm * MM_TO_PT).coerceAtLeast(0f)
+        val gapV = (template.marginVerticalMm * MM_TO_PT).coerceAtLeast(0f)
+        val availW = A4_WIDTH_PT - (2f * pageOuterMargin)
+        val availH = A4_HEIGHT_PT - (2f * pageOuterMargin) - headerSpace - footerSpace
+        val cardW = ((availW - (cols - 1) * gapH) / cols).coerceAtLeast(18f)
+        val cardH = ((availH - (rows - 1) * gapV) / rows).coerceAtLeast(14f)
+        val scaleFactor = if (template.scaleToA4) (cardH / 120f).coerceIn(0.32f, 1.35f) else 1.0f
+        return CardSheetMetrics(
+            cols = cols,
+            rows = rows,
+            pageOuterMarginPt = pageOuterMargin,
+            headerSpacePt = headerSpace,
+            footerSpacePt = footerSpace,
+            gapHPt = gapH,
+            gapVPt = gapV,
+            cardWidthPt = cardW,
+            cardHeightPt = cardH,
+            aspectRatio = (cardW / cardH).coerceIn(0.6f, 6.0f),
+            scaleFactor = scaleFactor
+        )
+    }
+
     fun persistPickedImage(context: Context, uri: Uri, prefix: String): String? {
         return try {
-            val dir = File(context.filesDir, "card_assets")
+            val isLogo = prefix.contains("logo", ignoreCase = true)
+            val subFolder = if (isLogo) "card_assets/logos" else "card_assets/backgrounds"
+            val dir = File(context.filesDir, subFolder)
             if (!dir.exists()) dir.mkdirs()
-            val outFile = File(dir, "${prefix}_${System.currentTimeMillis()}.jpg")
+            val ext = if (isLogo) "png" else "jpg"
+            val outFile = File(dir, "${prefix}_${System.currentTimeMillis()}.$ext")
             context.contentResolver.openInputStream(uri)?.use { input ->
                 val bmp = BitmapFactory.decodeStream(input)
                 if (bmp != null) {
                     FileOutputStream(outFile).use { out ->
-                        bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                        if (isLogo) {
+                            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        } else {
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 94, out)
+                        }
                     }
                     return outFile.absolutePath
                 }
+            }
+            // Fallback raw copy if decodeStream failed
+            context.contentResolver.openInputStream(uri)?.use { rawIn ->
+                FileOutputStream(outFile).use { out ->
+                    rawIn.copyTo(out)
+                }
+                if (outFile.length() > 0L) return outFile.absolutePath
             }
             null
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    fun listSavedBackgrounds(context: Context): List<File> {
+        val bgDir = File(context.filesDir, "card_assets/backgrounds")
+        val legacyDir = File(context.filesDir, "card_assets")
+        val fromNew = if (bgDir.exists()) {
+            bgDir.listFiles()?.filter { it.isFile && it.length() > 0L }.orEmpty()
+        } else emptyList()
+        val fromLegacy = if (legacyDir.exists()) {
+            legacyDir.listFiles()?.filter { it.isFile && it.name.startsWith("card_bg") && it.length() > 0L }.orEmpty()
+        } else emptyList()
+        return (fromNew + fromLegacy).distinctBy { it.absolutePath }.sortedByDescending { it.lastModified() }
+    }
+
+    fun listSavedLogos(context: Context): List<File> {
+        val logoDir = File(context.filesDir, "card_assets/logos")
+        val legacyDir = File(context.filesDir, "card_assets")
+        val fromNew = if (logoDir.exists()) {
+            logoDir.listFiles()?.filter { it.isFile && it.length() > 0L }.orEmpty()
+        } else emptyList()
+        val fromLegacy = if (legacyDir.exists()) {
+            legacyDir.listFiles()?.filter { it.isFile && it.name.startsWith("card_logo") && it.length() > 0L }.orEmpty()
+        } else emptyList()
+        return (fromNew + fromLegacy).distinctBy { it.absolutePath }.sortedByDescending { it.lastModified() }
+    }
+
+    fun deleteSavedAsset(path: String): Boolean {
+        return try {
+            val file = File(path)
+            if (file.exists()) file.delete() else false
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -166,8 +255,9 @@ object CardPdfGenerator {
                 cardsInput
             }
 
-            val cols = template.columnsPerPage.coerceIn(1, 12)
-            val rows = template.rowsPerPage.coerceIn(1, 35)
+            val metrics = computeSheetMetrics(template)
+            val cols = metrics.cols
+            val rows = metrics.rows
             val perPage = (cols * rows).coerceAtLeast(1)
 
             val bgBitmap = if (template.enableBackground && template.bgImageUri.isNotBlank()) {
@@ -182,25 +272,13 @@ object CardPdfGenerator {
             val pages = cards.chunked(perPage)
             val totalPages = pages.size.coerceAtLeast(1)
 
-            val pageOuterMargin = 14f // ~5mm outer A4 sheet margin
-            val headerSpace = if (template.showPageNote || template.showPageNumber) 24f else 6f
-            val footerSpace = if (template.showPageNumber) 18f else 6f
-
-            val gapH = (template.marginHorizontalMm * MM_TO_PT).coerceAtLeast(0f)
-            val gapV = (template.marginVerticalMm * MM_TO_PT).coerceAtLeast(0f)
-
-            val availW = A4_WIDTH_PT - (2f * pageOuterMargin)
-            val availH = A4_HEIGHT_PT - (2f * pageOuterMargin) - headerSpace - footerSpace
-
-            val cardW = ((availW - (cols - 1) * gapH) / cols).coerceAtLeast(18f)
-            val cardH = ((availH - (rows - 1) * gapV) / rows).coerceAtLeast(14f)
-
-            // Reference preview height is ~140pt; when scaleToA4 is active, scale text & logo relative to cell height
-            val scaleFactor = if (template.scaleToA4) {
-                (cardH / 120f).coerceIn(0.32f, 1.35f)
-            } else {
-                1.0f
-            }
+            val pageOuterMargin = metrics.pageOuterMarginPt
+            val headerSpace = metrics.headerSpacePt
+            val gapH = metrics.gapHPt
+            val gapV = metrics.gapVPt
+            val cardW = metrics.cardWidthPt
+            val cardH = metrics.cardHeightPt
+            val scaleFactor = metrics.scaleFactor
 
             val paint = Paint().apply { isAntiAlias = true }
             val borderColor = parseColorSafe(template.borderColorHex, android.graphics.Color.BLACK)
@@ -270,10 +348,12 @@ object CardPdfGenerator {
                         paint.textSize = (template.fontSize * 0.85f * scaleFactor).coerceAtLeast(4f)
                         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                         paint.textAlign = Paint.Align.CENTER
+                        val fm = paint.fontMetrics
+                        val centerOffset = -(fm.ascent + fm.descent) / 2f
                         canvas.drawText(
                             template.customTitleText,
                             left + cardW / 2f,
-                            top + (cardH * 0.18f) + paint.textSize * 0.35f,
+                            top + (cardH * 0.14f) + centerOffset,
                             paint
                         )
                     }
@@ -288,8 +368,10 @@ object CardPdfGenerator {
                             if (template.isFontBold) Typeface.BOLD else Typeface.NORMAL
                         )
                         paint.textAlign = Paint.Align.CENTER
+                        val fm = paint.fontMetrics
+                        val centerOffset = -(fm.ascent + fm.descent) / 2f
                         val ux = left + (template.userXPercent / 100f) * cardW
-                        val uy = top + (template.userYPercent / 100f) * cardH + paint.textSize * 0.35f
+                        val uy = top + (template.userYPercent / 100f) * cardH + centerOffset
                         canvas.drawText(card.username, ux, uy, paint)
                     }
 
@@ -391,8 +473,10 @@ object CardPdfGenerator {
         paint.textSize = textSizePt.coerceAtLeast(3.8f)
         paint.typeface = Typeface.create(Typeface.DEFAULT, if (bold) Typeface.BOLD else Typeface.NORMAL)
         paint.textAlign = Paint.Align.CENTER
+        val fm = paint.fontMetrics
+        val centerOffset = -(fm.ascent + fm.descent) / 2f
         val x = cardLeft + (xPercent / 100f) * cardW
-        val y = cardTop + (yPercent / 100f) * cardH + paint.textSize * 0.35f
+        val y = cardTop + (yPercent / 100f) * cardH + centerOffset
         canvas.drawText(text, x, y, paint)
     }
 
