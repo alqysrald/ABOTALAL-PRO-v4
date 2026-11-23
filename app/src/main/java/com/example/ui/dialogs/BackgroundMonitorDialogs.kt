@@ -298,6 +298,23 @@ fun BackgroundMonitorControlCard(
                         }
                     }
 
+                    if (monitorState.lastLoginEventSummary.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF064E3B).copy(alpha = 0.45f),
+                            border = BorderStroke(0.8.dp, Color(0xFF10B981).copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "آخر دخول جديد: ${monitorState.lastLoginEventSummary}",
+                                fontSize = 10.sp,
+                                color = Color(0xFFA7F3D0),
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -421,6 +438,7 @@ fun BackgroundMonitorSettingsDialog(
     var showCpu by remember(monitorState.showCpuInNotif) { mutableStateOf(monitorState.showCpuInNotif) }
     var showUsers by remember(monitorState.showUsersInNotif) { mutableStateOf(monitorState.showUsersInNotif) }
     var showPingUptime by remember(monitorState.showPingAndUptime) { mutableStateOf(monitorState.showPingAndUptime) }
+    var notifyNewLogins by remember(monitorState.notifyNewCardLogins) { mutableStateOf(monitorState.notifyNewCardLogins) }
 
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -604,6 +622,11 @@ fun BackgroundMonitorSettingsDialog(
                     checked = showPingUptime,
                     onCheckedChange = { showPingUptime = it }
                 )
+                MonitorToggleOptionRow(
+                    title = "إشعار فوري لدخول كرت جديد (هوتسبوت/يوزرمانجر)",
+                    checked = notifyNewLogins,
+                    onCheckedChange = { notifyNewLogins = it }
+                )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -626,7 +649,8 @@ fun BackgroundMonitorSettingsDialog(
                                 targetRouterId = selectedRouterId,
                                 showCpuInNotif = showCpu,
                                 showUsersInNotif = showUsers,
-                                showPingAndUptime = showPingUptime
+                                showPingAndUptime = showPingUptime,
+                                notifyNewCardLogins = notifyNewLogins
                             )
                             Toast.makeText(context, "تم حفظ إعدادات الإشعار والخلفية ✅", Toast.LENGTH_SHORT).show()
                             onDismiss()

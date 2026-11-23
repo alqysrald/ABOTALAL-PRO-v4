@@ -46,6 +46,42 @@ data class RouterSystemInfo(
     val errorMessage: String? = null
 )
 
+data class LiveRouterTelemetrySnapshot(
+    val isOnline: Boolean,
+    val pingMs: Long = 0L,
+    val cpuLoad: Int = 0,
+    val cpuTemperatureC: Float? = null,
+    val voltageStr: String = "",
+    val cpuModel: String = "MikroTik CPU",
+    val cpuCount: Int = 1,
+    val cpuFrequencyMhz: Int = 0,
+    val architectureName: String = "",
+    val boardName: String = "MikroTik",
+    val version: String = "RouterOS",
+    val uptime: String = "0s",
+    val freeMemoryBytes: Long = 0L,
+    val totalMemoryBytes: Long = 0L,
+    val freeMemoryFormatted: String = "0 MB",
+    val totalMemoryFormatted: String = "0 MB",
+    val memoryUsagePercent: Int = 0,
+    val activeHotspotUsers: Int = 0,
+    val activePppoeUsers: Int = 0,
+    val errorMessage: String? = null
+)
+
+data class ActiveCardLoginInfo(
+    val uniqueKey: String,
+    val cardCode: String,
+    val profileName: String,
+    val systemType: String, // "HOTSPOT" or "USER_MANAGER"
+    val systemLabel: String, // "هوتسبوت" or "يوزرمانجر"
+    val deviceType: String,
+    val hostName: String,
+    val ipAddress: String,
+    val macAddress: String,
+    val uptime: String
+)
+
 class MikroTikApiClient(
     private val host: String,
     private val port: Int = 8728,
@@ -1036,18 +1072,331 @@ class MikroTikApiClient(
     }
 
     private fun detectDeviceType(hostName: String, mac: String): String {
-        val lower = hostName.lowercase()
-        return when {
-            lower.contains("iphone") || lower.contains("ipad") || lower.contains("apple") -> "آبل (iOS / iPhone)"
-            lower.contains("samsung") || lower.contains("galaxy") -> "سامسونج (Samsung)"
-            lower.contains("xiaomi") || lower.contains("redmi") || lower.contains("poco") -> "شاومي (Xiaomi)"
+        val cleanHost = hostName.trim()
+        val lower = cleanHost.lowercase()
+        val oui = mac.trim().uppercase().replace("-", ":").take(8)
+
+        val brand = when {
+            lower.contains("iphone") || lower.contains("ipad") || lower.contains("apple") || lower.contains("macbook") -> "آبل (iOS / iPhone)"
+            lower.contains("samsung") || lower.contains("galaxy") || lower.startsWith("sm-") -> "سامسونج (Samsung)"
+            lower.contains("xiaomi") || lower.contains("redmi") || lower.contains("poco") || lower.startsWith("mi-") -> "شاومي (Xiaomi)"
             lower.contains("huawei") || lower.contains("honor") -> "هواوي (Huawei)"
-            lower.contains("oppo") || lower.contains("realme") || lower.contains("vivo") -> "أوبو / ريلمي (Android)"
+            lower.contains("oppo") || lower.contains("realme") || lower.contains("vivo") || lower.contains("cph") -> "أوبو / ريلمي (Android)"
+            lower.contains("oneplus") -> "ون بلس (OnePlus)"
+            lower.contains("pixel") || lower.contains("google") -> "جوجل بيكسل (Google)"
+            lower.contains("infinix") || lower.contains("tecno") || lower.contains("itel") -> "إنفينكس / تكنو (Android)"
             lower.contains("android") -> "هاتف ذكي (Android)"
-            lower.contains("desktop") || lower.contains("laptop") || lower.contains("win") || lower.contains("pc") -> "كمبيوتر / لابتوب (Windows/PC)"
+            lower.contains("desktop") || lower.contains("laptop") || lower.contains("win") || lower.contains("pc") -> "كمبيوتر / لابتوب (PC)"
             lower.contains("tv") || lower.contains("box") || lower.contains("chromecast") -> "شاشة / تلفاز ذكي (Smart TV)"
             lower.contains("router") || lower.contains("ap") || lower.contains("tplink") || lower.contains("mikrotik") -> "راوتر / نقطة بث (AP)"
+            oui in APPLE_OUIS -> "آبل (Apple iPhone/iPad)"
+            oui in SAMSUNG_OUIS -> "سامسونج (Samsung Galaxy)"
+            oui in XIAOMI_OUIS -> "شاومي (Xiaomi / Redmi)"
+            oui in HUAWEI_OUIS -> "هواوي (Huawei / Honor)"
+            oui in OPPO_OUIS -> "أوبو / ريلمي (Oppo/Realme)"
             else -> "هاتف ذكي / جهاز محمول"
+        }
+
+        return if (cleanHost.isNotBlank() && !cleanHost.equals(brand, ignoreCase = true) && cleanHost.length <= 28) {
+            "$brand • $cleanHost"
+        } else {
+            brand
+        }
+    }
+
+    /**
+     * Persistent fast live telemetry session so Dashboard 1-second polling reads CPU, temperature,
+     * uptime, version, model, RAM, and active counts over a single kept-alive TCP socket.
+     */
+    inner class LiveTelemetrySession {
+        private var socket: Socket? = null
+        private var inStream: DataInputStream? = null
+        private var outStream: DataOutputStream? = null
+
+        suspend fun pollTick(): LiveRouterTelemetrySnapshot = withContext(Dispatchers.IO) {
+            val tickStart = System.currentTimeMillis()
+            try {
+                if (socket == null || socket?.isClosed == true || socket?.isConnected != true) {
+                    close()
+                    val newSocket = createSocket().apply {
+                        soTimeout = 6000
+                    }
+                    val ins = DataInputStream(newSocket.getInputStream())
+                    val outs = DataOutputStream(newSocket.getOutputStream())
+                    val loginRes = performLogin(ins, outs)
+                    if (!loginRes.isSuccess) {
+                        try { newSocket.close() } catch (_: Exception) {}
+                        return@withContext LiveRouterTelemetrySnapshot(
+                            isOnline = false,
+                            pingMs = System.currentTimeMillis() - tickStart,
+                            errorMessage = loginRes.errorMessage ?: "فشل تسجيل الدخول للراوتر"
+                        )
+                    }
+                    socket = newSocket
+                    inStream = ins
+                    outStream = outs
+                }
+
+                val ins = inStream!!
+                val outs = outStream!!
+                val cmdStart = System.currentTimeMillis()
+                val resourceRes = executeCommand(ins, outs, listOf("/system/resource/print"))
+                val cmdPing = (System.currentTimeMillis() - cmdStart).coerceAtLeast(1L)
+
+                if (!resourceRes.isSuccess && resourceRes.results.isEmpty()) {
+                    throw IllegalStateException(resourceRes.errorMessage ?: "انقطاع استجابة الراوتر")
+                }
+
+                val resourceData = resourceRes.results.firstOrNull() ?: emptyMap()
+                val healthRes = executeCommand(ins, outs, listOf("/system/health/print"))
+                val hotspotRes = executeCommand(ins, outs, listOf("/ip/hotspot/active/print"))
+                val pppActiveRes = executeCommand(ins, outs, listOf("/ppp/active/print"))
+
+                val (tempC, voltageStr) = parseSystemHealth(healthRes.results)
+                val cpuLoad = (resourceData["cpu-load"]?.toIntOrNull() ?: 0).coerceIn(0, 100)
+                val freeMem = resourceData["free-memory"]?.toLongOrNull() ?: 0L
+                val totalMem = resourceData["total-memory"]?.toLongOrNull() ?: 0L
+                val usedPct = if (totalMem > 0L) {
+                    (((totalMem - freeMem).toDouble() / totalMem.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                } else 0
+
+                val uptime = resourceData["uptime"] ?: "0s"
+                val version = resourceData["version"] ?: "RouterOS"
+                val boardName = resourceData["board-name"] ?: resourceData["platform"] ?: "MikroTik"
+                val archName = resourceData["architecture-name"] ?: resourceData["platform"] ?: ""
+                val cpuModel = resourceData["cpu"] ?: archName.ifBlank { "MikroTik CPU" }
+                val cpuCount = resourceData["cpu-count"]?.toIntOrNull() ?: 1
+                val cpuFreq = resourceData["cpu-frequency"]?.toIntOrNull() ?: 0
+
+                LiveRouterTelemetrySnapshot(
+                    isOnline = true,
+                    pingMs = cmdPing,
+                    cpuLoad = cpuLoad,
+                    cpuTemperatureC = tempC,
+                    voltageStr = voltageStr,
+                    cpuModel = cpuModel,
+                    cpuCount = cpuCount,
+                    cpuFrequencyMhz = cpuFreq,
+                    architectureName = archName,
+                    boardName = boardName,
+                    version = version,
+                    uptime = uptime,
+                    freeMemoryBytes = freeMem,
+                    totalMemoryBytes = totalMem,
+                    freeMemoryFormatted = "${freeMem / (1024 * 1024)} MB",
+                    totalMemoryFormatted = "${totalMem / (1024 * 1024)} MB",
+                    memoryUsagePercent = usedPct,
+                    activeHotspotUsers = hotspotRes.results.size,
+                    activePppoeUsers = pppActiveRes.results.size,
+                    errorMessage = null
+                )
+            } catch (e: Exception) {
+                close()
+                LiveRouterTelemetrySnapshot(
+                    isOnline = false,
+                    pingMs = System.currentTimeMillis() - tickStart,
+                    errorMessage = e.localizedMessage ?: "تعذر الاتصال بالراوتر"
+                )
+            }
+        }
+
+        fun close() {
+            try { inStream?.close() } catch (_: Exception) {}
+            try { outStream?.close() } catch (_: Exception) {}
+            try { socket?.close() } catch (_: Exception) {}
+            inStream = null
+            outStream = null
+            socket = null
+        }
+    }
+
+    private fun parseSystemHealth(rows: List<Map<String, String>>): Pair<Float?, String> {
+        var tempC: Float? = null
+        var voltage = ""
+        if (rows.isEmpty()) return null to ""
+
+        // RouterOS v6 single map style
+        val first = rows.first()
+        val directCpuTemp = first["cpu-temperature"]?.toFloatOrNull()
+        val directTemp = first["temperature"]?.toFloatOrNull()
+        val directBoardTemp = first["board-temperature"]?.toFloatOrNull()
+        val directVoltage = first["voltage"] ?: ""
+
+        if (directCpuTemp != null && directCpuTemp > 0f) {
+            tempC = directCpuTemp
+        } else if (directTemp != null && directTemp > 0f) {
+            tempC = directTemp
+        } else if (directBoardTemp != null && directBoardTemp > 0f) {
+            tempC = directBoardTemp
+        }
+        if (directVoltage.isNotBlank()) {
+            voltage = "${directVoltage}V"
+        }
+
+        // RouterOS v7 multi-row {name="cpu-temperature", value="44", type="C"} style
+        if (tempC == null || voltage.isBlank()) {
+            var v7FallbackTemp: Float? = null
+            for (row in rows) {
+                val metricName = (row["name"] ?: "").lowercase()
+                val rawValue = row["value"] ?: ""
+                val numValue = rawValue.toFloatOrNull()
+                if (metricName.contains("cpu-temp") && numValue != null && numValue > 0f) {
+                    tempC = numValue
+                } else if (v7FallbackTemp == null && metricName.contains("temp") && numValue != null && numValue > 0f) {
+                    v7FallbackTemp = numValue
+                } else if (voltage.isBlank() && metricName.contains("voltage") && rawValue.isNotBlank()) {
+                    val unit = row["type"] ?: "V"
+                    voltage = "$rawValue$unit"
+                }
+            }
+            if (tempC == null) {
+                tempC = v7FallbackTemp
+            }
+        }
+        return tempC to voltage
+    }
+
+    suspend fun fetchActiveCardSessions(): List<ActiveCardLoginInfo> = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket().apply { soTimeout = 8000 }
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            if (!performLogin(inStream, outStream).isSuccess) return@withContext emptyList()
+
+            val hsActive = executeCommand(inStream, outStream, listOf("/ip/hotspot/active/print")).results
+            val hsUsers = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
+            val dhcpLeases = executeCommand(inStream, outStream, listOf("/ip/dhcp-server/lease/print")).results
+
+            // User Manager user-to-profile mappings (v7 & v6)
+            val umProfileByUser = mutableMapOf<String, String>()
+            val umV7Profiles = executeCommand(inStream, outStream, listOf("/user-manager/user-profile/print")).results
+            for (row in umV7Profiles) {
+                val u = row["user"]?.trim() ?: ""
+                val p = row["profile"]?.trim() ?: ""
+                if (u.isNotBlank() && p.isNotBlank() && row["state"] != "used") {
+                    umProfileByUser[u] = p
+                }
+            }
+            val umV7Users = executeCommand(inStream, outStream, listOf("/user-manager/user/print")).results
+            for (row in umV7Users) {
+                val u = row["name"]?.trim() ?: ""
+                val p = row["group"]?.trim() ?: ""
+                if (u.isNotBlank() && !umProfileByUser.containsKey(u)) {
+                    umProfileByUser[u] = p.ifBlank { "يوزرمانجر" }
+                }
+            }
+            val umV6Users = executeCommand(inStream, outStream, listOf("/tool/user-manager/user/print")).results
+            for (row in umV6Users) {
+                val u = row["username"]?.trim() ?: row["name"]?.trim() ?: ""
+                val p = row["actual-profile"]?.trim() ?: row["profile"]?.trim() ?: ""
+                if (u.isNotBlank()) {
+                    umProfileByUser[u] = p.ifBlank { "يوزرمانجر" }
+                }
+            }
+
+            val leaseByMac = mutableMapOf<String, Map<String, String>>()
+            val leaseByIp = mutableMapOf<String, Map<String, String>>()
+            for (lease in dhcpLeases) {
+                val lMac = (lease["active-mac-address"] ?: lease["mac-address"] ?: "").uppercase()
+                val lIp = lease["active-address"] ?: lease["address"] ?: ""
+                if (lMac.isNotBlank()) leaseByMac[lMac] = lease
+                if (lIp.isNotBlank()) leaseByIp[lIp] = lease
+            }
+
+            val hsProfileByUser = hsUsers.associate {
+                (it["name"]?.trim() ?: "") to (it["profile"]?.trim() ?: "default")
+            }
+
+            val sessions = mutableListOf<ActiveCardLoginInfo>()
+            val seenUsers = mutableSetOf<String>()
+
+            // 1. Parse Hotspot active logins (includes both Hotspot local cards & UM RADIUS hotspot logins)
+            for (act in hsActive) {
+                val card = act["user"]?.trim() ?: ""
+                if (card.isBlank()) continue
+                val mac = (act["mac-address"] ?: "").uppercase()
+                val ip = act["address"] ?: ""
+                val uptime = act["uptime"] ?: "0s"
+                val radiusFlag = act["radius"]?.equals("true", ignoreCase = true) == true ||
+                    act["radius"]?.equals("yes", ignoreCase = true) == true
+
+                val isUmUser = radiusFlag || (!hsProfileByUser.containsKey(card) && umProfileByUser.containsKey(card))
+                val systemType = if (isUmUser) "USER_MANAGER" else "HOTSPOT"
+                val systemLabel = if (isUmUser) "يوزرمانجر" else "هوتسبوت"
+                val profileName = if (isUmUser) {
+                    umProfileByUser[card] ?: act["profile"] ?: "باقة يوزرمانجر"
+                } else {
+                    hsProfileByUser[card] ?: act["profile"] ?: "default"
+                }
+
+                val lease = leaseByMac[mac] ?: leaseByIp[ip]
+                val hostName = lease?.get("host-name")?.ifBlank { null }
+                    ?: lease?.get("comment")?.ifBlank { null }
+                    ?: ""
+                val deviceType = detectDeviceType(hostName, mac)
+                val key = "$systemType|$card|${mac.ifBlank { ip }}"
+                seenUsers.add("$card|$mac")
+
+                sessions.add(
+                    ActiveCardLoginInfo(
+                        uniqueKey = key,
+                        cardCode = card,
+                        profileName = profileName,
+                        systemType = systemType,
+                        systemLabel = systemLabel,
+                        deviceType = deviceType,
+                        hostName = hostName,
+                        ipAddress = ip,
+                        macAddress = mac,
+                        uptime = uptime
+                    )
+                )
+            }
+
+            // 2. Parse active User Manager v7 / v6 sessions not already captured via Hotspot active
+            val umV7Active = executeCommand(inStream, outStream, listOf("/user-manager/session/print", "?active=true")).results
+            val umV6Active = if (umV7Active.isEmpty()) {
+                executeCommand(inStream, outStream, listOf("/tool/user-manager/session/print", "?active=true")).results
+            } else emptyList()
+
+            for (row in (umV7Active + umV6Active)) {
+                val card = row["user"]?.trim() ?: row["username"]?.trim() ?: ""
+                if (card.isBlank()) continue
+                val mac = (row["calling-station-id"] ?: row["mac-address"] ?: "").uppercase()
+                val ip = row["user-address"] ?: row["framed-ip-address"] ?: ""
+                if (seenUsers.contains("$card|$mac")) continue
+
+                val profileName = umProfileByUser[card] ?: row["profile"] ?: "باقة يوزرمانجر"
+                val lease = leaseByMac[mac] ?: leaseByIp[ip]
+                val hostName = lease?.get("host-name")?.ifBlank { null }
+                    ?: lease?.get("comment")?.ifBlank { null }
+                    ?: ""
+                val deviceType = detectDeviceType(hostName, mac)
+                val key = "USER_MANAGER|$card|${mac.ifBlank { ip }}"
+
+                sessions.add(
+                    ActiveCardLoginInfo(
+                        uniqueKey = key,
+                        cardCode = card,
+                        profileName = profileName,
+                        systemType = "USER_MANAGER",
+                        systemLabel = "يوزرمانجر",
+                        deviceType = deviceType,
+                        hostName = hostName,
+                        ipAddress = ip,
+                        macAddress = mac,
+                        uptime = row["uptime"] ?: "0s"
+                    )
+                )
+            }
+
+            sessions
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to fetch active card sessions", e)
+            emptyList()
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
         }
     }
 
@@ -2697,5 +3046,32 @@ class MikroTikApiClient(
             hexChars[j * 2 + 1] = hexArray[v and 0x0F]
         }
         return String(hexChars)
+    }
+
+    companion object {
+        private val APPLE_OUIS = setOf(
+            "00:03:93", "00:1B:63", "00:25:00", "28:CF:DA", "3C:15:C2", "40:A6:D9",
+            "54:26:96", "60:F8:1D", "70:56:81", "84:38:35", "A4:B1:97", "B8:E8:56",
+            "C8:69:CD", "D0:25:98", "DC:2B:2A", "E0:B5:2D", "F0:18:98", "F4:5C:89"
+        )
+        private val SAMSUNG_OUIS = setOf(
+            "00:12:47", "00:15:99", "00:21:19", "14:49:E0", "28:27:BF", "34:23:BA",
+            "50:CC:F8", "5C:0A:5B", "78:47:1D", "84:25:DB", "94:35:0A", "A0:82:1F",
+            "B4:3A:28", "C0:BD:D1", "CC:07:AB", "E4:7C:F9", "F4:09:D8"
+        )
+        private val XIAOMI_OUIS = setOf(
+            "04:CF:8C", "14:F6:5A", "20:47:DA", "28:6C:07", "34:CE:00", "50:8F:4C",
+            "64:09:80", "74:23:44", "78:11:DC", "8C:BE:BE", "98:FA:E3", "C4:0B:CB",
+            "D4:97:0B", "F0:B4:29", "F8:A4:5F"
+        )
+        private val HUAWEI_OUIS = setOf(
+            "00:E0:FC", "04:C0:6F", "10:47:80", "24:09:95", "38:F8:89", "48:46:FB",
+            "5C:B3:95", "70:72:3C", "80:B6:86", "94:77:2B", "AC:E2:15", "C8:D1:5E",
+            "D4:6A:A8", "E0:24:7F", "F4:55:9C"
+        )
+        private val OPPO_OUIS = setOf(
+            "18:3A:2D", "2C:5B:B8", "50:3C:C4", "74:67:F7", "8C:B8:4A", "A4:50:46",
+            "B0:2A:43", "D8:63:75", "EC:51:BC"
+        )
     }
 }

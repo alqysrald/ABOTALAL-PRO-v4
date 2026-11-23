@@ -7,6 +7,7 @@ import com.example.data.firebase.AIAssistantPermissions
 import com.example.data.firebase.FirebaseAppConfig
 import com.example.data.firebase.FirebaseManager
 import com.example.data.firebase.FirebaseUserAccount
+import com.example.data.mikrotik.LiveRouterTelemetrySnapshot
 import com.example.data.mikrotik.MikroTikApiClient
 import com.example.data.mikrotik.MikroTikResponse
 import com.example.data.mikrotik.PingResult
@@ -66,6 +67,20 @@ data class AssistantMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val isRouterCommand: Boolean = false,
     val commandOutput: String? = null
+)
+
+data class DashboardLiveTelemetryState(
+    val selectedRouterId: Long = 0L,
+    val routerName: String = "",
+    val routerHost: String = "",
+    val hasRouters: Boolean = false,
+    val isStreaming: Boolean = true,
+    val isOnline: Boolean = false,
+    val snapshot: LiveRouterTelemetrySnapshot? = null,
+    val cpuHistory: List<Int> = emptyList(),
+    val ramHistory: List<Int> = emptyList(),
+    val pingHistory: List<Long> = emptyList(),
+    val lastUpdatedTime: String = "--:--:--"
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -3467,6 +3482,142 @@ class TalalProViewModel(
             repository.updateCardBatch(batch.copy(cardsCount = newCount))
             snackbarMessage.value = "تم حذف الكرت [${item.username}]"
         }
+    }
+
+    // ================= LIVE 1-SECOND DASHBOARD TELEMETRY =================
+
+    private val _dashboardLiveTelemetry = MutableStateFlow(DashboardLiveTelemetryState())
+    val dashboardLiveTelemetry: StateFlow<DashboardLiveTelemetryState> = _dashboardLiveTelemetry.asStateFlow()
+
+    private var liveTelemetryJob: Job? = null
+    private var liveTelemetrySession: MikroTikApiClient.LiveTelemetrySession? = null
+    private var liveSessionRouterId: Long = -1L
+
+    fun selectDashboardTelemetryRouter(routerId: Long) {
+        if (_dashboardLiveTelemetry.value.selectedRouterId != routerId) {
+            liveTelemetrySession?.close()
+            liveTelemetrySession = null
+            liveSessionRouterId = -1L
+            _dashboardLiveTelemetry.update {
+                it.copy(
+                    selectedRouterId = routerId,
+                    cpuHistory = emptyList(),
+                    ramHistory = emptyList(),
+                    pingHistory = emptyList(),
+                    snapshot = null
+                )
+            }
+            if (_dashboardLiveTelemetry.value.isStreaming) {
+                startDashboardLiveTelemetry()
+            }
+        }
+    }
+
+    fun toggleDashboardLiveStreaming() {
+        val next = !_dashboardLiveTelemetry.value.isStreaming
+        _dashboardLiveTelemetry.update { it.copy(isStreaming = next) }
+        if (next) {
+            startDashboardLiveTelemetry()
+        } else {
+            stopDashboardLiveTelemetry()
+        }
+    }
+
+    fun startDashboardLiveTelemetry() {
+        liveTelemetryJob?.cancel()
+        liveTelemetryJob = viewModelScope.launch(Dispatchers.IO) {
+            val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.ENGLISH)
+            while (isActive && _dashboardLiveTelemetry.value.isStreaming) {
+                val loopStart = System.currentTimeMillis()
+                val routers = allRouters.value
+                if (routers.isEmpty()) {
+                    liveTelemetrySession?.close()
+                    liveTelemetrySession = null
+                    liveSessionRouterId = -1L
+                    _dashboardLiveTelemetry.update {
+                        it.copy(
+                            hasRouters = false,
+                            isOnline = false,
+                            routerName = "",
+                            routerHost = "",
+                            snapshot = null,
+                            lastUpdatedTime = timeFmt.format(Date())
+                        )
+                    }
+                    delay(1000L)
+                    continue
+                }
+
+                val requestedId = _dashboardLiveTelemetry.value.selectedRouterId
+                val target = routers.firstOrNull { it.id == requestedId }
+                    ?: routers.firstOrNull { it.isOnline }
+                    ?: routers.first()
+
+                if (liveSessionRouterId != target.id || liveTelemetrySession == null) {
+                    liveTelemetrySession?.close()
+                    val client = MikroTikApiClient(
+                        host = target.host,
+                        port = target.port,
+                        username = target.username,
+                        password = target.password,
+                        timeoutMs = 6000
+                    )
+                    liveTelemetrySession = client.LiveTelemetrySession()
+                    liveSessionRouterId = target.id
+                    if (_dashboardLiveTelemetry.value.selectedRouterId != target.id) {
+                        _dashboardLiveTelemetry.update {
+                            it.copy(
+                                selectedRouterId = target.id,
+                                cpuHistory = emptyList(),
+                                ramHistory = emptyList(),
+                                pingHistory = emptyList()
+                            )
+                        }
+                    }
+                }
+
+                val snap = liveTelemetrySession?.pollTick() ?: LiveRouterTelemetrySnapshot(
+                    isOnline = false,
+                    errorMessage = "تعذر إنشاء جلسة مراقبة"
+                )
+                val nowStr = timeFmt.format(Date())
+
+                _dashboardLiveTelemetry.update { prev ->
+                    val nextCpuHist = (prev.cpuHistory + if (snap.isOnline) snap.cpuLoad else 0).takeLast(30)
+                    val nextRamHist = (prev.ramHistory + if (snap.isOnline) snap.memoryUsagePercent else 0).takeLast(30)
+                    val nextPingHist = (prev.pingHistory + snap.pingMs.coerceAtLeast(0L)).takeLast(30)
+                    prev.copy(
+                        selectedRouterId = target.id,
+                        routerName = target.name,
+                        routerHost = target.host,
+                        hasRouters = true,
+                        isOnline = snap.isOnline,
+                        snapshot = snap,
+                        cpuHistory = nextCpuHist,
+                        ramHistory = nextRamHist,
+                        pingHistory = nextPingHist,
+                        lastUpdatedTime = nowStr
+                    )
+                }
+
+                val elapsed = System.currentTimeMillis() - loopStart
+                val remainingDelay = (1000L - elapsed).coerceIn(200L, 1000L)
+                delay(remainingDelay)
+            }
+        }
+    }
+
+    fun stopDashboardLiveTelemetry() {
+        liveTelemetryJob?.cancel()
+        liveTelemetryJob = null
+        liveTelemetrySession?.close()
+        liveTelemetrySession = null
+        liveSessionRouterId = -1L
+    }
+
+    override fun onCleared() {
+        stopDashboardLiveTelemetry()
+        super.onCleared()
     }
 
     class Factory(

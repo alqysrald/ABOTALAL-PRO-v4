@@ -27,6 +27,7 @@ import com.example.data.model.NetworkDeviceEntity
 import com.example.data.model.RouterEntity
 import com.example.ui.ScreenTab
 import com.example.ui.TalalProViewModel
+import com.example.ui.components.LiveRouterTelemetryHeroPanel
 import com.example.ui.dialogs.BackgroundMonitorControlCard
 import com.example.ui.dialogs.BackgroundMonitorSettingsDialog
 import com.example.ui.theme.*
@@ -44,6 +45,14 @@ fun DashboardScreen(
     val maintenanceDevices by viewModel.maintenanceDevicesCount.collectAsState()
     val routersCount by viewModel.routersCount.collectAsState()
     val onlineRoutersCount by viewModel.onlineRoutersCount.collectAsState()
+    val liveTelemetry by viewModel.dashboardLiveTelemetry.collectAsState()
+
+    DisposableEffect(Unit) {
+        viewModel.startDashboardLiveTelemetry()
+        onDispose {
+            viewModel.stopDashboardLiveTelemetry()
+        }
+    }
 
     var showHelpAccordion by remember { mutableStateOf(false) }
     var showBgMonitorSettings by remember { mutableStateOf(false) }
@@ -58,6 +67,17 @@ fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(vertical = 14.dp)
     ) {
+        // 0. Top Hero Live 1-Second Router Telemetry Dashboard (Gauges, Waveform Chart, Specs)
+        item(key = "live_router_telemetry_hero") {
+            LiveRouterTelemetryHeroPanel(
+                telemetry = liveTelemetry,
+                routers = routers,
+                onSelectRouter = { routerId -> viewModel.selectDashboardTelemetryRouter(routerId) },
+                onToggleStreaming = { viewModel.toggleDashboardLiveStreaming() },
+                onAddRouterClick = { viewModel.showAddRouterDialog.value = true }
+            )
+        }
+
         // 1. Main Header Card (Matches Screenshot 1)
         item {
             Card(

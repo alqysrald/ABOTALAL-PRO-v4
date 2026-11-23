@@ -20,6 +20,7 @@ data class BackgroundMonitorState(
     val showCpuInNotif: Boolean = true,
     val showUsersInNotif: Boolean = true,
     val showPingAndUptime: Boolean = true,
+    val notifyNewCardLogins: Boolean = true,
     val hasRouters: Boolean = false,
     val routerName: String = "بانتظار إضافة راوتر",
     val boardInfo: String = "MikroTik RouterOS",
@@ -35,6 +36,7 @@ data class BackgroundMonitorState(
     val onlineDevices: Int = 0,
     val totalDevices: Int = 0,
     val lastUpdatedTime: String = "--:--:--",
+    val lastLoginEventSummary: String = "",
     val lastError: String? = null
 )
 
@@ -46,6 +48,7 @@ object RouterMonitorManager {
     private const val KEY_SHOW_CPU = "bg_monitor_show_cpu"
     private const val KEY_SHOW_USERS = "bg_monitor_show_users"
     private const val KEY_SHOW_PING_UPTIME = "bg_monitor_show_ping_uptime"
+    private const val KEY_NOTIFY_NEW_LOGINS = "bg_monitor_notify_new_logins"
 
     private val _state = MutableStateFlow(BackgroundMonitorState())
     val state: StateFlow<BackgroundMonitorState> = _state.asStateFlow()
@@ -63,7 +66,8 @@ object RouterMonitorManager {
                 targetRouterId = prefs.getLong(KEY_TARGET_ROUTER_ID, 0L),
                 showCpuInNotif = prefs.getBoolean(KEY_SHOW_CPU, true),
                 showUsersInNotif = prefs.getBoolean(KEY_SHOW_USERS, true),
-                showPingAndUptime = prefs.getBoolean(KEY_SHOW_PING_UPTIME, true)
+                showPingAndUptime = prefs.getBoolean(KEY_SHOW_PING_UPTIME, true),
+                notifyNewCardLogins = prefs.getBoolean(KEY_NOTIFY_NEW_LOGINS, true)
             )
         }
         initialized = true
@@ -132,7 +136,8 @@ object RouterMonitorManager {
         targetRouterId: Long = _state.value.targetRouterId,
         showCpuInNotif: Boolean = _state.value.showCpuInNotif,
         showUsersInNotif: Boolean = _state.value.showUsersInNotif,
-        showPingAndUptime: Boolean = _state.value.showPingAndUptime
+        showPingAndUptime: Boolean = _state.value.showPingAndUptime,
+        notifyNewCardLogins: Boolean = _state.value.notifyNewCardLogins
     ) {
         ensureInitialized(context)
         val safeInterval = intervalSeconds.coerceIn(5, 300)
@@ -142,6 +147,7 @@ object RouterMonitorManager {
             .putBoolean(KEY_SHOW_CPU, showCpuInNotif)
             .putBoolean(KEY_SHOW_USERS, showUsersInNotif)
             .putBoolean(KEY_SHOW_PING_UPTIME, showPingAndUptime)
+            .putBoolean(KEY_NOTIFY_NEW_LOGINS, notifyNewCardLogins)
             .apply()
 
         _state.update {
@@ -150,7 +156,8 @@ object RouterMonitorManager {
                 targetRouterId = targetRouterId,
                 showCpuInNotif = showCpuInNotif,
                 showUsersInNotif = showUsersInNotif,
-                showPingAndUptime = showPingAndUptime
+                showPingAndUptime = showPingAndUptime,
+                notifyNewCardLogins = notifyNewCardLogins
             )
         }
 

@@ -17,6 +17,8 @@ import androidx.core.app.ServiceCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.TalalProApplication
+import com.example.data.mikrotik.MikroTikApiClient
+import com.example.data.model.AlertSeverity
 import com.example.data.model.DeviceStatus
 import com.example.data.model.RouterEntity
 import com.example.notifications.NotificationHelper
@@ -37,7 +39,11 @@ class RouterMonitorForegroundService : Service() {
     private val tag = "RouterMonitorService"
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var monitorLoopJob: Job? = null
+    private var sessionWatcherJob: Job? = null
     private var manualRefreshJob: Job? = null
+
+    private val baselineInitializedRouters = mutableSetOf<Long>()
+    private val knownSessionKeysByRouter = mutableMapOf<Long, Set<String>>()
 
     override fun onCreate() {
         super.onCreate()
@@ -56,6 +62,7 @@ class RouterMonitorForegroundService : Service() {
                     RouterMonitorManager.setEnabledPref(this, false)
                 }
                 monitorLoopJob?.cancel()
+                sessionWatcherJob?.cancel()
                 manualRefreshJob?.cancel()
                 RouterMonitorManager.markRunning(false)
                 RouterMonitorManager.markRefreshing(false)
@@ -69,9 +76,13 @@ class RouterMonitorForegroundService : Service() {
                 manualRefreshJob?.cancel()
                 manualRefreshJob = serviceScope.launch {
                     performPollCycle(refreshAllRouters = true)
+                    checkNewCardLoginsAcrossRouters()
                 }
                 if (monitorLoopJob?.isActive != true) {
                     startMonitorLoop(immediatePoll = false)
+                }
+                if (sessionWatcherJob?.isActive != true) {
+                    startSessionWatcherLoop()
                 }
                 return START_STICKY
             }
@@ -80,6 +91,7 @@ class RouterMonitorForegroundService : Service() {
                 ensureForegroundStarted()
                 publishCurrentNotification(RouterMonitorManager.state.value)
                 startMonitorLoop(immediatePoll = true)
+                startSessionWatcherLoop()
                 return START_STICKY
             }
 
@@ -90,6 +102,9 @@ class RouterMonitorForegroundService : Service() {
                     startMonitorLoop(immediatePoll = true)
                 } else {
                     publishCurrentNotification(RouterMonitorManager.state.value)
+                }
+                if (sessionWatcherJob?.isActive != true) {
+                    startSessionWatcherLoop()
                 }
                 return START_STICKY
             }
@@ -120,6 +135,100 @@ class RouterMonitorForegroundService : Service() {
                 delay(intervalMs)
                 performPollCycle(refreshAllRouters = false)
             }
+        }
+    }
+
+    private fun startSessionWatcherLoop() {
+        sessionWatcherJob?.cancel()
+        sessionWatcherJob = serviceScope.launch {
+            while (isActive) {
+                if (RouterMonitorManager.state.value.notifyNewCardLogins) {
+                    checkNewCardLoginsAcrossRouters()
+                }
+                delay(6000L) // Fast 6-second detection for new Hotspot & User Manager logins
+            }
+        }
+    }
+
+    private suspend fun checkNewCardLoginsAcrossRouters() {
+        try {
+            val app = application as TalalProApplication
+            val repo = app.repository
+            val routerDao = app.database.routerDao()
+            val uid = repo.currentUserId.value.ifBlank { repo.getSavedUserEmail() ?: "" }
+            val routers: List<RouterEntity> = if (uid.isNotBlank()) {
+                routerDao.getRoutersListForUser(uid).ifEmpty { routerDao.getAllRoutersList() }
+            } else {
+                routerDao.getAllRoutersList()
+            }
+            if (routers.isEmpty()) return
+
+            val configuredId = RouterMonitorManager.state.value.targetRouterId
+            val targetRouters = if (configuredId > 0L) {
+                routers.filter { it.id == configuredId }.ifEmpty { routers.take(1) }
+            } else {
+                routers.filter { it.isOnline }.ifEmpty { routers.take(1) }
+            }
+
+            for (router in targetRouters) {
+                val client = MikroTikApiClient(
+                    host = router.host,
+                    port = router.port,
+                    username = router.username,
+                    password = router.password
+                )
+                val activeSessions = client.fetchActiveCardSessions()
+                val currentKeys = activeSessions.map { it.uniqueKey }.toSet()
+
+                if (!baselineInitializedRouters.contains(router.id)) {
+                    // Initial baseline scan: store existing connected users without flooding notifications
+                    baselineInitializedRouters.add(router.id)
+                    knownSessionKeysByRouter[router.id] = currentKeys
+                    continue
+                }
+
+                val previousKeys = knownSessionKeysByRouter[router.id] ?: emptySet()
+                val newLogins = activeSessions.filter { it.uniqueKey !in previousKeys }
+                knownSessionKeysByRouter[router.id] = currentKeys
+
+                if (newLogins.isNotEmpty()) {
+                    // Limit simultaneous burst notifications if many users connect at the exact same second
+                    newLogins.take(5).forEachIndexed { idx, session ->
+                        val notifId = (50000 + (session.uniqueKey.hashCode() and 0x7FFF) + idx)
+                        NotificationHelper.showNewCardLoginNotification(
+                            context = this,
+                            cardCode = session.cardCode,
+                            profileName = session.profileName,
+                            systemLabel = session.systemLabel,
+                            deviceType = session.deviceType,
+                            routerName = router.name,
+                            ipAddress = session.ipAddress,
+                            macAddress = session.macAddress,
+                            notificationId = notifId
+                        )
+
+                        repo.addAlert(
+                            userId = router.userId,
+                            title = "دخول كرت جديد (${session.systemLabel}): ${session.cardCode}",
+                            message = "رقم الكرت: ${session.cardCode} | الفئة: ${session.profileName} | الجهاز: ${session.deviceType} | الراوتر: ${router.name}",
+                            severity = AlertSeverity.INFO,
+                            routerId = router.id
+                        )
+                    }
+
+                    val latest = newLogins.last()
+                    RouterMonitorManager.updateTelemetry { prev ->
+                        prev.copy(
+                            lastLoginEventSummary = "${latest.systemLabel}: ${latest.cardCode} (${latest.profileName}) • ${latest.deviceType}"
+                        )
+                    }
+                    if (repo.soundEnabled.value) {
+                        app.soundManager.playSuccessBeep()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error checking new card logins", e)
         }
     }
 
@@ -395,6 +504,7 @@ class RouterMonitorForegroundService : Service() {
 
     override fun onDestroy() {
         monitorLoopJob?.cancel()
+        sessionWatcherJob?.cancel()
         manualRefreshJob?.cancel()
         serviceScope.cancel()
         RouterMonitorManager.markRunning(false)
