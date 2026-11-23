@@ -16,8 +16,8 @@ android {
     applicationId = "com.talalpro.app"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "4.1"
+    versionCode = 6
+    versionName = "4.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

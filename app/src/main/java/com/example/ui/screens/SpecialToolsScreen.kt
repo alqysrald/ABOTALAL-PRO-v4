@@ -3,8 +3,10 @@ package com.example.ui.screens
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,7 +42,7 @@ fun SpecialToolsScreen(
     var activeRouter by remember(routers, selectedRouter) {
         mutableStateOf(selectedRouter ?: routers.firstOrNull())
     }
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: VLANs, 1: General Tools
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: VLANs, 1: Log, 2: General Tools
 
     Scaffold(
         topBar = {
@@ -48,7 +51,7 @@ fun SpecialToolsScreen(
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "أدوات مميزة وفيلانات (Tools & VLANs)",
+                                text = "الأدوات المميزة (Tools)",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimaryLight
                             )
@@ -58,7 +61,7 @@ fun SpecialToolsScreen(
                                 color = Color(0xFF6366F1).copy(alpha = 0.15f)
                             ) {
                                 Text(
-                                    text = "VLANs ⚡",
+                                    text = "VLANs • Log ⚡",
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color(0xFF4F46E5),
@@ -67,7 +70,7 @@ fun SpecialToolsScreen(
                             }
                         }
                         Text(
-                            text = "إدارة وعزل شبكات الفيلان بالكامل، وتفعيل الكلاود والنسخ الاحتياطي",
+                            text = "إدارة الفيلانات، سجل المشاكل والأحداث بالعربية، وتفعيل الكلاود",
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondaryLight
                         )
@@ -142,10 +145,12 @@ fun SpecialToolsScreen(
                 }
             }
 
-            // TOOL TABS: VLANs & General Tools
+            // TOOL TABS: VLANs, Log & General Tools
             item {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChip(
@@ -153,7 +158,7 @@ fun SpecialToolsScreen(
                         onClick = { selectedTab = 0 },
                         label = {
                             Text(
-                                "🌐 قسم الفيلانات (VLANs)",
+                                "🌐 الفيلانات (VLANs)",
                                 fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal,
                                 fontSize = 12.sp
                             )
@@ -164,7 +169,7 @@ fun SpecialToolsScreen(
                             containerColor = Color.White,
                             labelColor = PrimaryNavy
                         ),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.testTag("tools_tab_vlans")
                     )
 
                     FilterChip(
@@ -172,8 +177,27 @@ fun SpecialToolsScreen(
                         onClick = { selectedTab = 1 },
                         label = {
                             Text(
-                                "☁️ أدوات الكلاود والصيانة",
+                                "📋 السجل والمشاكل (Log)",
                                 fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 12.sp
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFF0F172A),
+                            selectedLabelColor = Color.White,
+                            containerColor = Color.White,
+                            labelColor = PrimaryNavy
+                        ),
+                        modifier = Modifier.testTag("tools_tab_log")
+                    )
+
+                    FilterChip(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        label = {
+                            Text(
+                                "☁️ الكلاود والصيانة",
+                                fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal,
                                 fontSize = 12.sp
                             )
                         },
@@ -183,7 +207,7 @@ fun SpecialToolsScreen(
                             containerColor = Color.White,
                             labelColor = PrimaryNavy
                         ),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.testTag("tools_tab_cloud")
                     )
                 }
             }
@@ -198,8 +222,18 @@ fun SpecialToolsScreen(
                 }
             }
 
-            // TAB 1: GENERAL TOOLS (CLOUD DDNS, BACKUP, REBOOT)
+            // TAB 1: SYSTEM & ROUTER LOG SECTION (IN ARABIC)
             if (selectedTab == 1) {
+                item {
+                    LogManagementSection(
+                        viewModel = viewModel,
+                        router = activeRouter
+                    )
+                }
+            }
+
+            // TAB 2: GENERAL TOOLS (CLOUD DDNS, BACKUP, REBOOT)
+            if (selectedTab == 2) {
                 // TOOL 1: ONE-CLICK IP CLOUD DDNS
                 item {
                     Card(

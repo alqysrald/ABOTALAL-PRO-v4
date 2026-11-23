@@ -282,9 +282,9 @@ fun SideDrawerContent(
 
             DrawerNavTabItem(
                 icon = Icons.Default.Lan,
-                title = "أدوات مميزة وفيلانات (Tools & VLANs)",
+                title = "أدوات مميزة (VLANs & Log)",
                 isSelected = currentTab == ScreenTab.TOOLS,
-                badge = "VLANs & Cloud ⚡",
+                badge = "VLANs • Log ⚡",
                 badgeColor = Color(0xFF6366F1),
                 onClick = {
                     onNavigate(ScreenTab.TOOLS)

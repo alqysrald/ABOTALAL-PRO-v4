@@ -6,7 +6,9 @@ import com.example.data.model.DistributionDeviceItem
 import com.example.data.model.NetworkDeviceEntity
 import com.example.data.model.NetworkPortEntity
 import com.example.data.model.SuspiciousCardSharingAlert
+import com.example.data.model.MikrotikLogEntry
 import com.example.data.model.MikrotikVlan
+import com.example.ui.utils.ArabicLogTranslator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
@@ -1392,6 +1394,52 @@ class MikroTikApiClient(
             try { socket?.close() } catch (_: Exception) {}
         }
         vlans
+    }
+
+    suspend fun getRouterLogs(limit: Int = 250): Pair<List<MikrotikLogEntry>, String?> = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) {
+                val errAr = ArabicLogTranslator.translateAppErrorToArabic(login.errorMessage ?: "فشل تسجيل الدخول للراوتر")
+                return@withContext Pair(emptyList(), errAr)
+            }
+
+            val res = executeCommand(inStream, outStream, listOf("/log/print"))
+            if (!res.isSuccess && res.results.isEmpty()) {
+                val errAr = ArabicLogTranslator.translateAppErrorToArabic(res.errorMessage ?: "تعذر قراءة سجل الراوتر")
+                return@withContext Pair(emptyList(), errAr)
+            }
+
+            val entries = res.results
+                .takeLast(limit)
+                .asReversed()
+                .mapIndexed { idx, r ->
+                    val id = r[".id"] ?: "log_$idx"
+                    val time = r["time"] ?: ""
+                    val topics = r["topics"] ?: "info"
+                    val rawMsg = r["message"] ?: ""
+                    MikrotikLogEntry(
+                        id = "mt_${id}_$idx",
+                        time = time,
+                        topics = topics,
+                        topicsAr = ArabicLogTranslator.translateTopics(topics),
+                        originalMessage = rawMsg,
+                        arabicMessage = ArabicLogTranslator.translateMessage(topics, rawMsg),
+                        severity = ArabicLogTranslator.detectSeverity(topics, rawMsg),
+                        source = "الراوتر"
+                    )
+                }
+            Pair(entries, null)
+        } catch (e: Exception) {
+            Log.e(tag, "Error fetching router logs", e)
+            Pair(emptyList(), ArabicLogTranslator.translateAppErrorToArabic(e.message ?: e.javaClass.simpleName))
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
     }
 
     suspend fun getInterfacesList(): List<String> = withContext(Dispatchers.IO) {

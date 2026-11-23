@@ -355,6 +355,11 @@ class TalalProViewModel(
     val isSavingVlan = MutableStateFlow(false)
     val vlanOperationResult = MutableStateFlow<String?>(null)
 
+    // ================= SYSTEM & ROUTER LOGS STATES =================
+    val routerLogs = MutableStateFlow<List<MikrotikLogEntry>>(emptyList())
+    val isLoadingRouterLogs = MutableStateFlow(false)
+    val routerLogsError = MutableStateFlow<String?>(null)
+
     // Assistant / Chat states
     val selectedAssistantRouter = MutableStateFlow<RouterEntity?>(null)
     private val _assistantMessages = MutableStateFlow<List<AssistantMessage>>(
@@ -1373,6 +1378,36 @@ class TalalProViewModel(
             } finally {
                 isLoadingVlans.value = false
             }
+        }
+    }
+
+    fun loadRouterLogs(router: RouterEntity?) {
+        if (router == null) {
+            routerLogs.value = emptyList()
+            routerLogsError.value = "يرجى اختيار راوتر لعرض سجلاته"
+            return
+        }
+        viewModelScope.launch {
+            isLoadingRouterLogs.value = true
+            routerLogsError.value = null
+            try {
+                val (list, err) = repository.getRouterLogs(router)
+                routerLogs.value = list
+                routerLogsError.value = err
+            } catch (e: Exception) {
+                routerLogsError.value = "تعذر جلب سجل الراوتر: ${e.localizedMessage ?: "خطأ غير معروف"}"
+            } finally {
+                isLoadingRouterLogs.value = false
+            }
+        }
+    }
+
+    fun clearAppLogs() {
+        val uid = currentUser.value?.id ?: ""
+        viewModelScope.launch {
+            repository.clearLogs(uid)
+            repository.clearAllAlerts(uid)
+            snackbarMessage.value = "تم مسح سجل رسائل ومشاكل التطبيق بنجاح ✓"
         }
     }
 

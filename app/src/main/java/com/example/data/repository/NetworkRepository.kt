@@ -343,6 +343,16 @@ class NetworkRepository(
         return client.getVlans()
     }
 
+    suspend fun getRouterLogs(router: RouterEntity, limit: Int = 250): Pair<List<MikrotikLogEntry>, String?> {
+        val client = MikroTikApiClient(
+            host = router.host,
+            port = router.port,
+            username = router.username,
+            password = router.password
+        )
+        return client.getRouterLogs(limit)
+    }
+
     suspend fun getRouterInterfacesList(router: RouterEntity): List<String> {
         val client = MikroTikApiClient(
             host = router.host,

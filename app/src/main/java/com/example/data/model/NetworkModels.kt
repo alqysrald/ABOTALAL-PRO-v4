@@ -461,3 +461,24 @@ data class MikrotikVlan(
     val rxPacket: Long = 0L,
     val txPacket: Long = 0L
 )
+
+// ================= SYSTEM & ROUTER LOGS =================
+
+enum class LogSeverity {
+    CRITICAL,
+    ERROR,
+    WARNING,
+    INFO
+}
+
+data class MikrotikLogEntry(
+    val id: String = "",
+    val time: String = "",
+    val topics: String = "",
+    val topicsAr: String = "النظام",
+    val originalMessage: String = "",
+    val arabicMessage: String = "",
+    val severity: LogSeverity = LogSeverity.INFO,
+    val source: String = "الراوتر" // "الراوتر" or "التطبيق"
+)
+
