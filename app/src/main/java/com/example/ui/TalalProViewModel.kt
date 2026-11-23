@@ -34,6 +34,7 @@ enum class ScreenTab {
     USER_MANAGER,
     HOTSPOT,
     ACTIVE_USERS,
+    ADD_CARDS,
     CARD_DESIGNER,
     MAP,
     TELEGRAM,
@@ -307,6 +308,24 @@ class TalalProViewModel(
     val designerProfilesDisconnected = MutableStateFlow(false)
     val lastGeneratedUmBatch = MutableStateFlow<List<GeneratedCardPrintItem>>(emptyList())
     val lastGeneratedHotspotBatch = MutableStateFlow<List<GeneratedCardPrintItem>>(emptyList())
+
+    // ================= ADD CARDS & BATCH MANAGEMENT STATES =================
+    val selectedAddCardsRouter = MutableStateFlow<RouterEntity?>(null)
+    val isSyncingAllPackages = MutableStateFlow(false)
+    val isProcessingBatch = MutableStateFlow(false)
+    val selectedBatchIdForView = MutableStateFlow<Long?>(null)
+
+    val cardBatches: StateFlow<List<CardBatchEntity>> = _currentUser.flatMapLatest { user ->
+        repository.getCardBatches(user?.id ?: "")
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val selectedBatchItems: StateFlow<List<CardBatchItemEntity>> = selectedBatchIdForView.flatMapLatest { batchId ->
+        if (batchId != null) {
+            repository.getBatchItems(batchId)
+        } else {
+            flowOf(emptyList())
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // ================= ACTIVE CONNECTED USERS / DEVICES STATES =================
     val selectedActiveRouter = MutableStateFlow<RouterEntity?>(null)
@@ -2940,6 +2959,498 @@ class TalalProViewModel(
         viewModelScope.launch {
             repository.saveAdvancedTelegramConfig(updated)
             snackbarMessage.value = "تم تحديث إعداد الميزة"
+        }
+    }
+
+    // ================= ADD CARDS & BATCH ACTIONS =================
+
+    fun syncAllPackagesForAddCards(router: RouterEntity?) {
+        if (router == null) {
+            snackbarMessage.value = "يرجى اختيار أو إضافة راوتر أولاً لمزامنة الباقات"
+            return
+        }
+        selectedAddCardsRouter.value = router
+        selectedUserManagerRouter.value = router
+        selectedHotspotRouter.value = router
+
+        viewModelScope.launch {
+            isSyncingAllPackages.value = true
+            isSyncingUserManager.value = true
+            isSyncingHotspot.value = true
+            try {
+                val umOk = repository.syncUserManager(router)
+                val hsOk = repository.syncHotspot(router)
+                if (umOk || hsOk) {
+                    snackbarMessage.value = "تمت مزامنة كافة باقات اليوزرمانجر والهوتسبوت من [${router.name}] ✓"
+                } else {
+                    snackbarMessage.value = "تعذر الاتصال بالراوتر [${router.name}] لجلب الباقات"
+                }
+            } catch (e: Exception) {
+                snackbarMessage.value = "خطأ أثناء المزامنة: ${e.localizedMessage ?: "تعذر الاتصال"}"
+            } finally {
+                isSyncingAllPackages.value = false
+                isSyncingUserManager.value = false
+                isSyncingHotspot.value = false
+            }
+        }
+    }
+
+    fun generateBatchPreviewSampleCode(
+        charType: String,
+        codeLength: Int,
+        prefix: String,
+        excludeSimilar: Boolean
+    ): String {
+        val len = codeLength.coerceIn(4, 18)
+        val cleanPrefix = prefix.trim()
+        val remaining = (len - cleanPrefix.length).coerceAtLeast(1)
+        val digitPool = if (excludeSimilar) "23456789" else "0123456789"
+        val letterPool = if (excludeSimilar) "ABCDEFGHJKLMNPQRSTUVWXYZ" else "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        val samplePool = when (charType) {
+            "LETTERS" -> letterPool
+            "MIXED" -> digitPool + letterPool
+            else -> digitPool
+        }
+        val sb = StringBuilder(cleanPrefix)
+        for (i in 0 until remaining) {
+            sb.append(samplePool[(i * 7 + 3) % samplePool.length])
+        }
+        return sb.toString()
+    }
+
+    private fun generateRandomCardCodes(
+        count: Int,
+        charType: String,
+        codeLength: Int,
+        prefix: String,
+        excludeSimilar: Boolean
+    ): List<String> {
+        val safeCount = count.coerceIn(1, 500)
+        val len = codeLength.coerceIn(4, 18)
+        val cleanPrefix = prefix.trim()
+        val remaining = (len - cleanPrefix.length).coerceAtLeast(1)
+
+        val digits = if (excludeSimilar) "23456789" else "0123456789"
+        val letters = if (excludeSimilar) "ABCDEFGHJKLMNPQRSTUVWXYZ" else "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        val pool = when (charType) {
+            "LETTERS" -> letters
+            "MIXED" -> digits + letters
+            else -> digits
+        }
+
+        val rnd = Random()
+        val unique = LinkedHashSet<String>(safeCount)
+        var attempts = 0
+        val maxAttempts = safeCount * 20
+        while (unique.size < safeCount && attempts < maxAttempts) {
+            attempts++
+            val sb = StringBuilder(cleanPrefix)
+            for (j in 0 until remaining) {
+                sb.append(pool[rnd.nextInt(pool.length)])
+            }
+            unique.add(sb.toString())
+        }
+        return unique.toList()
+    }
+
+    fun createCardBatch(
+        router: RouterEntity?,
+        serverType: String,
+        profileName: String,
+        priceLabel: String,
+        charType: String,
+        codeLength: Int,
+        count: Int,
+        prefix: String,
+        excludeSimilar: Boolean,
+        template: CardTemplateEntity,
+        onBatchReadyForPrint: ((CardBatchEntity, List<GeneratedCardPrintItem>) -> Unit)? = null
+    ) {
+        val safeProfile = profileName.ifBlank { "default" }
+        val safeCount = count.coerceIn(1, 500)
+        val safeLen = codeLength.coerceIn(4, 18)
+
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val uid = _currentUser.value?.id ?: ""
+                val codes = generateRandomCardCodes(safeCount, charType, safeLen, prefix, excludeSimilar)
+                val rnd = Random()
+                val batchCode = if (serverType == "USER_MANAGER") {
+                    "UM-${1000 + rnd.nextInt(8999)}"
+                } else {
+                    "HS-${1000 + rnd.nextInt(8999)}"
+                }
+                val routerDisplayName = router?.name ?: "بدون راوتر (محلي)"
+                val cardPairs = codes.map { it to it }
+
+                var syncedToRouter = false
+                var routerNote: String? = null
+                if (router != null) {
+                    val (addedCount, errMsg) = repository.addBatchCardsToRouter(
+                        router = router,
+                        serverType = serverType,
+                        cards = cardPairs,
+                        profile = safeProfile,
+                        comment = "Batch:$batchCode"
+                    )
+                    if (addedCount > 0) {
+                        syncedToRouter = true
+                    } else {
+                        routerNote = errMsg
+                    }
+                }
+
+                val batch = CardBatchEntity(
+                    userId = uid,
+                    routerId = router?.id ?: 0L,
+                    routerName = routerDisplayName,
+                    batchCode = batchCode,
+                    serverType = serverType,
+                    profileName = safeProfile,
+                    priceLabel = priceLabel.ifBlank { "100 RY" },
+                    charType = charType,
+                    codeLength = safeLen,
+                    prefix = prefix.trim(),
+                    excludeSimilar = excludeSimilar,
+                    cardsCount = codes.size,
+                    templateId = template.id,
+                    templateName = template.templateName.ifBlank { "Default_Design" },
+                    isDisabled = false,
+                    isSyncedToRouter = syncedToRouter
+                )
+
+                val itemEntities = codes.mapIndexed { idx, code ->
+                    CardBatchItemEntity(
+                        userId = uid,
+                        username = code,
+                        password = code,
+                        profileName = safeProfile,
+                        price = priceLabel.ifBlank { "100 RY" },
+                        serial = String.format(Locale.US, "%s-%04d", batchCode, idx + 1),
+                        paymentNumber = batchCode,
+                        posName = routerDisplayName
+                    )
+                }
+
+                val savedId = repository.saveCardBatchWithItems(batch, itemEntities)
+                val savedBatch = batch.copy(id = savedId)
+
+                val printItems = itemEntities.map {
+                    GeneratedCardPrintItem(
+                        username = it.username,
+                        password = it.password,
+                        profileName = it.profileName,
+                        price = it.price,
+                        serial = it.serial,
+                        paymentNumber = it.paymentNumber,
+                        posName = it.posName
+                    )
+                }
+
+                if (syncedToRouter && router != null) {
+                    if (serverType == "USER_MANAGER") {
+                        lastGeneratedUmBatch.value = printItems
+                        repository.syncUserManager(router)
+                    } else {
+                        lastGeneratedHotspotBatch.value = printItems
+                        repository.syncHotspot(router)
+                    }
+                    snackbarMessage.value = "تم إنشاء دفعة [$batchCode] (${codes.size} كرت) في الراوتر بنجاح ✓"
+                } else {
+                    val reason = routerNote?.let { " ($it)" } ?: ""
+                    snackbarMessage.value = "تم حفظ الدفعة [$batchCode] (${codes.size} كرت) للطباعة — بانتظار الرفع للراوتر$reason"
+                }
+
+                onBatchReadyForPrint?.invoke(savedBatch, printItems)
+            } catch (e: Exception) {
+                snackbarMessage.value = "حدث خطأ أثناء إنشاء الدفعة: ${e.localizedMessage}"
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    fun importCardBatch(
+        router: RouterEntity?,
+        batchTitle: String,
+        serverType: String,
+        profileName: String,
+        priceLabel: String,
+        importedPairs: List<Pair<String, String>>,
+        pushToRouter: Boolean,
+        template: CardTemplateEntity,
+        onImportedForPrint: ((CardBatchEntity, List<GeneratedCardPrintItem>) -> Unit)? = null
+    ) {
+        if (importedPairs.isEmpty()) {
+            snackbarMessage.value = "لم يتم العثور على أي كروت صالحة للاستيراد"
+            return
+        }
+        val safeProfile = profileName.ifBlank { "default" }
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val uid = _currentUser.value?.id ?: ""
+                val rnd = Random()
+                val batchCode = batchTitle.trim().ifBlank { "IMP-${1000 + rnd.nextInt(8999)}" }
+                val routerDisplayName = router?.name ?: "استيراد محلي"
+
+                var synced = false
+                var errNote: String? = null
+                if (pushToRouter && router != null) {
+                    val (added, err) = repository.addBatchCardsToRouter(
+                        router = router,
+                        serverType = serverType,
+                        cards = importedPairs,
+                        profile = safeProfile,
+                        comment = "Import:$batchCode"
+                    )
+                    if (added > 0) synced = true else errNote = err
+                }
+
+                val batch = CardBatchEntity(
+                    userId = uid,
+                    routerId = router?.id ?: 0L,
+                    routerName = routerDisplayName,
+                    batchCode = batchCode,
+                    serverType = serverType,
+                    profileName = safeProfile,
+                    priceLabel = priceLabel.ifBlank { "100 RY" },
+                    charType = "IMPORTED",
+                    codeLength = importedPairs.first().first.length,
+                    cardsCount = importedPairs.size,
+                    templateId = template.id,
+                    templateName = template.templateName.ifBlank { "Default_Design" },
+                    isDisabled = false,
+                    isSyncedToRouter = synced
+                )
+
+                val itemEntities = importedPairs.mapIndexed { idx, pair ->
+                    CardBatchItemEntity(
+                        userId = uid,
+                        username = pair.first,
+                        password = pair.second.ifBlank { pair.first },
+                        profileName = safeProfile,
+                        price = priceLabel.ifBlank { "100 RY" },
+                        serial = String.format(Locale.US, "%s-%04d", batchCode, idx + 1),
+                        paymentNumber = batchCode,
+                        posName = routerDisplayName
+                    )
+                }
+
+                val savedId = repository.saveCardBatchWithItems(batch, itemEntities)
+                val savedBatch = batch.copy(id = savedId)
+                val printItems = itemEntities.map {
+                    GeneratedCardPrintItem(
+                        username = it.username,
+                        password = it.password,
+                        profileName = it.profileName,
+                        price = it.price,
+                        serial = it.serial,
+                        paymentNumber = it.paymentNumber,
+                        posName = it.posName
+                    )
+                }
+
+                if (pushToRouter && router != null && synced) {
+                    if (serverType == "USER_MANAGER") repository.syncUserManager(router)
+                    else repository.syncHotspot(router)
+                    snackbarMessage.value = "تم استيراد ورفع دفعة [$batchCode] (${importedPairs.size} كرت) بنجاح ✓"
+                } else if (pushToRouter && errNote != null) {
+                    snackbarMessage.value = "تم حفظ الدفعة محلياً ولكن تعذر الرفع للراوتر: $errNote"
+                } else {
+                    snackbarMessage.value = "تم استيراد دفعة [$batchCode] (${importedPairs.size} كرت) بنجاح ✓"
+                }
+
+                onImportedForPrint?.invoke(savedBatch, printItems)
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    fun syncDraftBatchToRouter(router: RouterEntity?, batch: CardBatchEntity) {
+        if (router == null) {
+            snackbarMessage.value = "يرجى اختيار راوتر متصل لرفع الدفعة"
+            return
+        }
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val items = repository.getBatchItemsSync(batch.id)
+                val pairs = items.map { it.username to it.password }
+                val (added, err) = repository.addBatchCardsToRouter(
+                    router = router,
+                    serverType = batch.serverType,
+                    cards = pairs,
+                    profile = batch.profileName,
+                    comment = "Batch:${batch.batchCode}"
+                )
+                if (added > 0) {
+                    repository.updateCardBatch(
+                        batch.copy(
+                            routerId = router.id,
+                            routerName = router.name,
+                            isSyncedToRouter = true
+                        )
+                    )
+                    snackbarMessage.value = "تم رفع $added كرت من الدفعة [${batch.batchCode}] إلى [${router.name}] ✓"
+                } else {
+                    snackbarMessage.value = "فشل رفع الدفعة للراوتر: ${err ?: "تحقق من الاتصال"}"
+                }
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    fun toggleCardBatch(router: RouterEntity?, batch: CardBatchEntity, enable: Boolean) {
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+                if (batch.isSyncedToRouter && targetRouter != null) {
+                    val items = repository.getBatchItemsSync(batch.id)
+                    val res = repository.toggleBatchOnRouter(
+                        router = targetRouter,
+                        serverType = batch.serverType,
+                        usernames = items.map { it.username },
+                        enable = enable
+                    )
+                    if (!res.isSuccess) {
+                        snackbarMessage.value = "تنبيه الراوتر: ${res.errorMessage}"
+                    }
+                }
+                repository.updateCardBatch(batch.copy(isDisabled = !enable))
+                repository.updateBatchItemsDisabled(batch.id, !enable)
+                snackbarMessage.value = if (enable) "تم تفعيل دفعة [${batch.batchCode}] بنجاح ✓" else "تم إيقاف دفعة [${batch.batchCode}] مؤقتاً ⏸"
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    fun editCardBatch(
+        router: RouterEntity?,
+        batch: CardBatchEntity,
+        newBatchCode: String,
+        newProfile: String,
+        newPriceLabel: String,
+        newTemplate: CardTemplateEntity?
+    ) {
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val cleanCode = newBatchCode.trim().ifBlank { batch.batchCode }
+                val cleanProfile = newProfile.trim().ifBlank { batch.profileName }
+                val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+
+                if (cleanProfile != batch.profileName && batch.isSyncedToRouter && targetRouter != null) {
+                    val items = repository.getBatchItemsSync(batch.id)
+                    repository.changeBatchProfileOnRouter(
+                        router = targetRouter,
+                        serverType = batch.serverType,
+                        usernames = items.map { it.username },
+                        newProfile = cleanProfile
+                    )
+                }
+
+                repository.updateBatchItemsProfile(batch.id, cleanProfile)
+                repository.updateCardBatch(
+                    batch.copy(
+                        batchCode = cleanCode,
+                        profileName = cleanProfile,
+                        priceLabel = newPriceLabel.trim().ifBlank { batch.priceLabel },
+                        templateId = newTemplate?.id ?: batch.templateId,
+                        templateName = newTemplate?.templateName ?: batch.templateName
+                    )
+                )
+                snackbarMessage.value = "تم تعديل الدفعة [$cleanCode] وحفظ التغييرات ✓"
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    fun deleteCardBatch(router: RouterEntity?, batch: CardBatchEntity, alsoFromRouter: Boolean) {
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+                if (alsoFromRouter && batch.isSyncedToRouter && targetRouter != null) {
+                    val items = repository.getBatchItemsSync(batch.id)
+                    repository.deleteBatchOnRouter(
+                        router = targetRouter,
+                        serverType = batch.serverType,
+                        usernames = items.map { it.username }
+                    )
+                }
+                repository.deleteCardBatch(batch.id)
+                snackbarMessage.value = if (alsoFromRouter) {
+                    "تم حذف الدفعة [${batch.batchCode}] من التطبيق والراوتر نهائياً"
+                } else {
+                    "تم حذف الدفعة [${batch.batchCode}] من السجل المحلي"
+                }
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
+    suspend fun getBatchPrintItems(batch: CardBatchEntity): List<GeneratedCardPrintItem> {
+        val items = repository.getBatchItemsSync(batch.id)
+        return items.map {
+            GeneratedCardPrintItem(
+                username = it.username,
+                password = it.password,
+                profileName = it.profileName,
+                price = it.price,
+                serial = it.serial,
+                paymentNumber = it.paymentNumber,
+                posName = it.posName
+            )
+        }
+    }
+
+    fun toggleSingleBatchCard(
+        router: RouterEntity?,
+        batch: CardBatchEntity,
+        item: CardBatchItemEntity,
+        enable: Boolean
+    ) {
+        viewModelScope.launch {
+            val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+            if (batch.isSyncedToRouter && targetRouter != null) {
+                repository.toggleBatchOnRouter(
+                    router = targetRouter,
+                    serverType = batch.serverType,
+                    usernames = listOf(item.username),
+                    enable = enable
+                )
+            }
+            repository.updateBatchItemDisabled(item.id, !enable)
+            snackbarMessage.value = if (enable) "تم تفعيل الكرت [${item.username}]" else "تم إيقاف الكرت [${item.username}]"
+        }
+    }
+
+    fun deleteSingleBatchCard(
+        router: RouterEntity?,
+        batch: CardBatchEntity,
+        item: CardBatchItemEntity
+    ) {
+        viewModelScope.launch {
+            val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+            if (batch.isSyncedToRouter && targetRouter != null) {
+                repository.deleteBatchOnRouter(
+                    router = targetRouter,
+                    serverType = batch.serverType,
+                    usernames = listOf(item.username)
+                )
+            }
+            repository.deleteBatchItem(item.id)
+            val newCount = (batch.cardsCount - 1).coerceAtLeast(0)
+            repository.updateCardBatch(batch.copy(cardsCount = newCount))
+            snackbarMessage.value = "تم حذف الكرت [${item.username}]"
         }
     }
 

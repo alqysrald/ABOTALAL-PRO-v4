@@ -288,3 +288,45 @@ interface CardTemplateDao {
     @Query("DELETE FROM card_templates WHERE id = :templateId")
     suspend fun deleteTemplateById(templateId: Long)
 }
+
+// ================= CARD BATCH DAO =================
+
+@Dao
+interface CardBatchDao {
+    @Query("SELECT * FROM card_batches WHERE (userId = :userId OR :userId = '') ORDER BY createdAt DESC")
+    fun getBatchesForUser(userId: String): Flow<List<CardBatchEntity>>
+
+    @Query("SELECT * FROM card_batch_items WHERE batchId = :batchId ORDER BY id ASC")
+    fun getItemsForBatch(batchId: Long): Flow<List<CardBatchItemEntity>>
+
+    @Query("SELECT * FROM card_batch_items WHERE batchId = :batchId ORDER BY id ASC")
+    suspend fun getItemsForBatchSync(batchId: Long): List<CardBatchItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBatch(batch: CardBatchEntity): Long
+
+    @Update
+    suspend fun updateBatch(batch: CardBatchEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBatchItems(items: List<CardBatchItemEntity>)
+
+    @Query("UPDATE card_batch_items SET isDisabled = :disabled WHERE batchId = :batchId")
+    suspend fun updateBatchItemsDisabled(batchId: Long, disabled: Boolean)
+
+    @Query("UPDATE card_batch_items SET profileName = :newProfile WHERE batchId = :batchId")
+    suspend fun updateBatchItemsProfile(batchId: Long, newProfile: String)
+
+    @Query("UPDATE card_batch_items SET isDisabled = :disabled WHERE id = :itemId")
+    suspend fun updateBatchItemDisabled(itemId: Long, disabled: Boolean)
+
+    @Query("DELETE FROM card_batch_items WHERE id = :itemId")
+    suspend fun deleteBatchItem(itemId: Long)
+
+    @Query("DELETE FROM card_batches WHERE id = :batchId")
+    suspend fun deleteBatchById(batchId: Long)
+
+    @Query("DELETE FROM card_batch_items WHERE batchId = :batchId")
+    suspend fun deleteItemsByBatchId(batchId: Long)
+}
+

@@ -35,6 +35,7 @@ class NetworkRepository(
     private val cardTemplateDao: CardTemplateDao,
     private val advancedTelegramBotDao: AdvancedTelegramBotDao,
     val customTelegramButtonDao: CustomTelegramButtonDao,
+    private val cardBatchDao: CardBatchDao,
     private val soundEffectManager: SoundEffectManager,
     private val appContext: Context
 ) {
@@ -1260,4 +1261,131 @@ class NetworkRepository(
             }
         """.trimIndent()
     }
+
+    // ================= CARD BATCHES MANAGEMENT =================
+
+    fun getCardBatches(userId: String): Flow<List<CardBatchEntity>> =
+        cardBatchDao.getBatchesForUser(userId)
+
+    fun getBatchItems(batchId: Long): Flow<List<CardBatchItemEntity>> =
+        cardBatchDao.getItemsForBatch(batchId)
+
+    suspend fun getBatchItemsSync(batchId: Long): List<CardBatchItemEntity> =
+        cardBatchDao.getItemsForBatchSync(batchId)
+
+    suspend fun saveCardBatchWithItems(
+        batch: CardBatchEntity,
+        items: List<CardBatchItemEntity>
+    ): Long {
+        val batchId = cardBatchDao.insertBatch(batch)
+        val mapped = items.map { it.copy(batchId = batchId) }
+        cardBatchDao.insertBatchItems(mapped)
+        return batchId
+    }
+
+    suspend fun updateCardBatch(batch: CardBatchEntity) {
+        cardBatchDao.updateBatch(batch)
+    }
+
+    suspend fun updateBatchItemsDisabled(batchId: Long, disabled: Boolean) {
+        cardBatchDao.updateBatchItemsDisabled(batchId, disabled)
+    }
+
+    suspend fun updateBatchItemsProfile(batchId: Long, newProfile: String) {
+        cardBatchDao.updateBatchItemsProfile(batchId, newProfile)
+    }
+
+    suspend fun updateBatchItemDisabled(itemId: Long, disabled: Boolean) {
+        cardBatchDao.updateBatchItemDisabled(itemId, disabled)
+    }
+
+    suspend fun deleteBatchItem(itemId: Long) {
+        cardBatchDao.deleteBatchItem(itemId)
+    }
+
+    suspend fun deleteCardBatch(batchId: Long) {
+        cardBatchDao.deleteItemsByBatchId(batchId)
+        cardBatchDao.deleteBatchById(batchId)
+    }
+
+    suspend fun addBatchCardsToRouter(
+        router: RouterEntity,
+        serverType: String,
+        cards: List<Pair<String, String>>,
+        profile: String,
+        comment: String
+    ): Pair<Int, String?> {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val result = client.addBatchCardsOnRouter(serverType, cards, profile, comment)
+        if (result.first > 0) {
+            addLog(
+                userId = router.userId,
+                action = "إنشاء دفعة كروت",
+                details = "تم إنشاء ${result.first} كرت ($serverType - $profile) في راوتر [${router.name}]",
+                isSuccess = true
+            )
+        } else {
+            addLog(
+                userId = router.userId,
+                action = "فشل رفع دفعة كروت",
+                details = "تعذر رفع الدفعة إلى [${router.name}]: ${result.second ?: "غير متصل"}",
+                isSuccess = false
+            )
+        }
+        return result
+    }
+
+    suspend fun toggleBatchOnRouter(
+        router: RouterEntity,
+        serverType: String,
+        usernames: List<String>,
+        enable: Boolean
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.toggleBatchCardsOnRouter(serverType, usernames, enable)
+        if (res.isSuccess) {
+            addLog(
+                userId = router.userId,
+                action = if (enable) "تفعيل دفعة كروت" else "إيقاف دفعة كروت",
+                details = "تم ${if (enable) "تفعيل" else "تعطيل"} ${usernames.size} كرت في راوتر [${router.name}]"
+            )
+        }
+        return res
+    }
+
+    suspend fun changeBatchProfileOnRouter(
+        router: RouterEntity,
+        serverType: String,
+        usernames: List<String>,
+        newProfile: String
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.changeBatchProfileOnRouter(serverType, usernames, newProfile)
+        if (res.isSuccess) {
+            addLog(
+                userId = router.userId,
+                action = "تعديل باقة دفعة كروت",
+                details = "تم تغيير باقة ${usernames.size} كرت إلى [$newProfile] في [${router.name}]"
+            )
+        }
+        return res
+    }
+
+    suspend fun deleteBatchOnRouter(
+        router: RouterEntity,
+        serverType: String,
+        usernames: List<String>
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.deleteBatchCardsOnRouter(serverType, usernames)
+        if (res.isSuccess) {
+            addLog(
+                userId = router.userId,
+                action = "حذف دفعة كروت من الراوتر",
+                details = "تم حذف ${usernames.size} كرت نهائياً من راوتر [${router.name}]"
+            )
+        }
+        return res
+    }
 }
+

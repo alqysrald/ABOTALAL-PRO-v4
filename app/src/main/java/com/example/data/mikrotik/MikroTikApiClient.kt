@@ -540,6 +540,245 @@ class MikroTikApiClient(
         }
     }
 
+    suspend fun addBatchCardsOnRouter(
+        serverType: String,
+        cards: List<Pair<String, String>>,
+        profile: String,
+        comment: String
+    ): Pair<Int, String?> = withContext(Dispatchers.IO) {
+        if (cards.isEmpty()) return@withContext Pair(0, null)
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) {
+                return@withContext Pair(0, login.errorMessage ?: "فشل تسجيل الدخول للراوتر")
+            }
+
+            var addedCount = 0
+            var lastError: String? = null
+
+            if (serverType.equals("USER_MANAGER", ignoreCase = true)) {
+                var useV7 = false
+                for ((idx, pair) in cards.withIndex()) {
+                    val (uName, uPass) = pair
+                    if (idx == 0) {
+                        val wordsV6 = mutableListOf(
+                            "/tool/user-manager/user/add",
+                            "=customer=admin",
+                            "=username=$uName",
+                            "=password=$uPass"
+                        )
+                        if (profile.isNotBlank() && profile != "default") wordsV6.add("=actual-profile=$profile")
+                        if (comment.isNotBlank()) wordsV6.add("=comment=$comment")
+                        val rV6 = executeCommand(inStream, outStream, wordsV6)
+                        if (rV6.isSuccess) {
+                            addedCount++
+                        } else {
+                            val wordsV7 = mutableListOf(
+                                "/user-manager/user/add",
+                                "=name=$uName",
+                                "=password=$uPass"
+                            )
+                            if (profile.isNotBlank() && profile != "default") wordsV7.add("=group=$profile")
+                            if (comment.isNotBlank()) wordsV7.add("=comment=$comment")
+                            val rV7 = executeCommand(inStream, outStream, wordsV7)
+                            if (rV7.isSuccess) {
+                                useV7 = true
+                                addedCount++
+                            } else {
+                                lastError = rV7.errorMessage ?: rV6.errorMessage
+                            }
+                        }
+                    } else {
+                        val words = if (!useV7) {
+                            mutableListOf(
+                                "/tool/user-manager/user/add",
+                                "=customer=admin",
+                                "=username=$uName",
+                                "=password=$uPass"
+                            ).apply {
+                                if (profile.isNotBlank() && profile != "default") add("=actual-profile=$profile")
+                                if (comment.isNotBlank()) add("=comment=$comment")
+                            }
+                        } else {
+                            mutableListOf(
+                                "/user-manager/user/add",
+                                "=name=$uName",
+                                "=password=$uPass"
+                            ).apply {
+                                if (profile.isNotBlank() && profile != "default") add("=group=$profile")
+                                if (comment.isNotBlank()) add("=comment=$comment")
+                            }
+                        }
+                        val r = executeCommand(inStream, outStream, words)
+                        if (r.isSuccess) addedCount++ else lastError = r.errorMessage
+                    }
+                }
+            } else {
+                for ((uName, uPass) in cards) {
+                    val words = mutableListOf(
+                        "/ip/hotspot/user/add",
+                        "=name=$uName",
+                        "=password=$uPass",
+                        "=profile=${profile.ifBlank { "default" }}"
+                    )
+                    if (comment.isNotBlank()) words.add("=comment=$comment")
+                    val r = executeCommand(inStream, outStream, words)
+                    if (r.isSuccess) addedCount++ else lastError = r.errorMessage
+                }
+            }
+            Pair(addedCount, if (addedCount == 0) lastError else null)
+        } catch (e: Exception) {
+            Log.e(tag, "addBatchCardsOnRouter error", e)
+            Pair(0, ArabicLogTranslator.translateAppErrorToArabic(e.message ?: "تعذر الاتصال بالراوتر"))
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun toggleBatchCardsOnRouter(
+        serverType: String,
+        usernames: List<String>,
+        enable: Boolean
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        if (usernames.isEmpty()) return@withContext MikroTikResponse(isSuccess = true)
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val targetSet = usernames.toSet()
+            val disVal = if (enable) "no" else "yes"
+            var affected = 0
+
+            if (serverType.equals("USER_MANAGER", ignoreCase = true)) {
+                val resV6 = executeCommand(inStream, outStream, listOf("/tool/user-manager/user/print"))
+                val useV7 = !resV6.isSuccess || resV6.results.isEmpty()
+                val rows = if (useV7) executeCommand(inStream, outStream, listOf("/user-manager/user/print")).results else resV6.results
+                val cmd = if (useV7) "/user-manager/user/set" else "/tool/user-manager/user/set"
+                for (row in rows) {
+                    val u = row["name"] ?: row["username"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        val r = executeCommand(inStream, outStream, listOf(cmd, "=.id=$id", "=disabled=$disVal"))
+                        if (r.isSuccess) affected++
+                    }
+                }
+            } else {
+                val rows = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
+                for (row in rows) {
+                    val u = row["name"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        val r = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/set", "=.id=$id", "=disabled=$disVal"))
+                        if (r.isSuccess) affected++
+                    }
+                }
+            }
+            MikroTikResponse(isSuccess = true, errorMessage = if (affected == 0) "لم يتم العثور على كروت مطابقة في الراوتر" else null)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = ArabicLogTranslator.translateAppErrorToArabic(e.message ?: ""))
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun changeBatchProfileOnRouter(
+        serverType: String,
+        usernames: List<String>,
+        newProfile: String
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        if (usernames.isEmpty() || newProfile.isBlank()) return@withContext MikroTikResponse(isSuccess = false, errorMessage = "بيانات غير مكتملة")
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val targetSet = usernames.toSet()
+            if (serverType.equals("USER_MANAGER", ignoreCase = true)) {
+                val resV6 = executeCommand(inStream, outStream, listOf("/tool/user-manager/user/print"))
+                val useV7 = !resV6.isSuccess || resV6.results.isEmpty()
+                val rows = if (useV7) executeCommand(inStream, outStream, listOf("/user-manager/user/print")).results else resV6.results
+                val cmd = if (useV7) "/user-manager/user/set" else "/tool/user-manager/user/set"
+                val key = if (useV7) "=group=$newProfile" else "=actual-profile=$newProfile"
+                for (row in rows) {
+                    val u = row["name"] ?: row["username"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        executeCommand(inStream, outStream, listOf(cmd, "=.id=$id", key))
+                    }
+                }
+            } else {
+                val rows = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
+                for (row in rows) {
+                    val u = row["name"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        executeCommand(inStream, outStream, listOf("/ip/hotspot/user/set", "=.id=$id", "=profile=$newProfile"))
+                    }
+                }
+            }
+            MikroTikResponse(isSuccess = true)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = ArabicLogTranslator.translateAppErrorToArabic(e.message ?: ""))
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun deleteBatchCardsOnRouter(
+        serverType: String,
+        usernames: List<String>
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        if (usernames.isEmpty()) return@withContext MikroTikResponse(isSuccess = true)
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val targetSet = usernames.toSet()
+            if (serverType.equals("USER_MANAGER", ignoreCase = true)) {
+                val resV6 = executeCommand(inStream, outStream, listOf("/tool/user-manager/user/print"))
+                val useV7 = !resV6.isSuccess || resV6.results.isEmpty()
+                val rows = if (useV7) executeCommand(inStream, outStream, listOf("/user-manager/user/print")).results else resV6.results
+                val cmd = if (useV7) "/user-manager/user/remove" else "/tool/user-manager/user/remove"
+                for (row in rows) {
+                    val u = row["name"] ?: row["username"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        executeCommand(inStream, outStream, listOf(cmd, "=.id=$id"))
+                    }
+                }
+            } else {
+                val rows = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
+                for (row in rows) {
+                    val u = row["name"] ?: ""
+                    val id = row[".id"] ?: ""
+                    if (id.isNotBlank() && targetSet.contains(u)) {
+                        executeCommand(inStream, outStream, listOf("/ip/hotspot/user/remove", "=.id=$id"))
+                    }
+                }
+            }
+            MikroTikResponse(isSuccess = true)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = ArabicLogTranslator.translateAppErrorToArabic(e.message ?: ""))
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
     suspend fun addHotspotUser(
         name: String,
         passwordVal: String,

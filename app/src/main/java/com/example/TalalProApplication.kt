@@ -23,6 +23,7 @@ class TalalProApplication : Application() {
             cardTemplateDao = database.cardTemplateDao(),
             advancedTelegramBotDao = database.advancedTelegramBotDao(),
             customTelegramButtonDao = database.customTelegramButtonDao(),
+            cardBatchDao = database.cardBatchDao(),
             soundEffectManager = soundManager,
             appContext = this
         )

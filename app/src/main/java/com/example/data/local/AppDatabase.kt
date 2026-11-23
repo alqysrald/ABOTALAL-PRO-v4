@@ -20,9 +20,11 @@ import com.example.data.model.*
         TelegramConfigEntity::class,
         CardTemplateEntity::class,
         AdvancedTelegramBotEntity::class,
-        TelegramCustomButtonEntity::class
+        TelegramCustomButtonEntity::class,
+        CardBatchEntity::class,
+        CardBatchItemEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -36,6 +38,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun cardTemplateDao(): CardTemplateDao
     abstract fun advancedTelegramBotDao(): AdvancedTelegramBotDao
     abstract fun customTelegramButtonDao(): CustomTelegramButtonDao
+    abstract fun cardBatchDao(): CardBatchDao
 
     companion object {
         @Volatile

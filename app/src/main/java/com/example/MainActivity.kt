@@ -207,6 +207,7 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
                         ScreenTab.USER_MANAGER -> UserManagerScreen(viewModel = viewModel)
                         ScreenTab.HOTSPOT -> HotspotScreen(viewModel = viewModel)
                         ScreenTab.ACTIVE_USERS -> ActiveUsersScreen(viewModel = viewModel)
+                        ScreenTab.ADD_CARDS -> AddCardsScreen(viewModel = viewModel)
                         ScreenTab.CARD_DESIGNER -> CardDesignerScreen(viewModel = viewModel)
                         ScreenTab.MAP -> DeviceMapScreen(viewModel = viewModel)
                         ScreenTab.TOOLS -> SpecialToolsScreen(viewModel = viewModel)

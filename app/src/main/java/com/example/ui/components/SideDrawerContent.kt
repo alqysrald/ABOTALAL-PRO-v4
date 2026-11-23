@@ -232,6 +232,19 @@ fun SideDrawerContent(
                 }
             )
 
+            // ADD CARDS & BATCH GENERATION
+            DrawerNavTabItem(
+                icon = Icons.Default.AddCard,
+                title = "قسم إضافة كروت (الدفعات)",
+                isSelected = currentTab == ScreenTab.ADD_CARDS,
+                badge = "توليد وطباعة 🎫",
+                badgeColor = Color(0xFF6E1423),
+                onClick = {
+                    onNavigate(ScreenTab.ADD_CARDS)
+                    onCloseDrawer()
+                }
+            )
+
             // CARD DESIGNER & PDF PRINTING
             DrawerNavTabItem(
                 icon = Icons.Default.Style,

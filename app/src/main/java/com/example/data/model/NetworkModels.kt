@@ -482,3 +482,45 @@ data class MikrotikLogEntry(
     val source: String = "الراوتر" // "الراوتر" or "التطبيق"
 )
 
+// ================= CARD BATCHES (ADD CARDS SECTION) =================
+
+@Entity(tableName = "card_batches")
+data class CardBatchEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val userId: String = "",
+    val routerId: Long = 0,
+    val routerName: String = "",
+    val batchCode: String = "",
+    val serverType: String = "HOTSPOT", // "HOTSPOT" or "USER_MANAGER"
+    val profileName: String = "default",
+    val priceLabel: String = "100 RY",
+    val charType: String = "DIGITS", // "DIGITS", "LETTERS", "MIXED"
+    val codeLength: Int = 9,
+    val prefix: String = "",
+    val excludeSimilar: Boolean = false,
+    val cardsCount: Int = 0,
+    val templateId: Long = 0,
+    val templateName: String = "Default_Design",
+    val isDisabled: Boolean = false,
+    val isSyncedToRouter: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "card_batch_items")
+data class CardBatchItemEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val batchId: Long = 0,
+    val userId: String = "",
+    val username: String = "",
+    val password: String = "",
+    val profileName: String = "",
+    val price: String = "",
+    val serial: String = "",
+    val paymentNumber: String = "",
+    val posName: String = "",
+    val isDisabled: Boolean = false
+)
+
+

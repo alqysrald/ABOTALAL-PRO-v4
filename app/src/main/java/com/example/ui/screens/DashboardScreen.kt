@@ -412,6 +412,70 @@ fun DashboardScreen(
             }
         }
 
+        // Quick Access Card: Add Cards & Batch Printing
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF6E1423))),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.setTab(ScreenTab.ADD_CARDS) }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF6E1423).copy(alpha = 0.35f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AddCard,
+                                contentDescription = "إضافة كروت",
+                                tint = Color(0xFFFDA4AF),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "قسم إضافة كروت وتوليد الدفعات",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "توليد، استيراد، مزامنة الباقات وطباعة PDF بالقالب المصمم",
+                                fontSize = 11.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = { viewModel.setTab(ScreenTab.ADD_CARDS) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6E1423)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text("فتح", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+            }
+        }
+
         // 4. "حالة الأجهزة" Section with Progress Bars (Matches Screenshot 1)
         item {
             Card(
