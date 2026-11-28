@@ -30,6 +30,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -42,8 +44,11 @@ class RouterMonitorForegroundService : Service() {
     private var sessionWatcherJob: Job? = null
     private var manualRefreshJob: Job? = null
 
+    private val sessionCheckMutex = Mutex()
     private val baselineInitializedRouters = mutableSetOf<Long>()
     private val knownSessionKeysByRouter = mutableMapOf<Long, Set<String>>()
+    private val lastNotifiedTimestamps = mutableMapOf<String, Long>()
+    private val notificationCooldownMs = 180_000L // 3 minutes cooldown per card/mac session
 
     override fun onCreate() {
         super.onCreate()
@@ -150,7 +155,7 @@ class RouterMonitorForegroundService : Service() {
         }
     }
 
-    private suspend fun checkNewCardLoginsAcrossRouters() {
+    private suspend fun checkNewCardLoginsAcrossRouters() = sessionCheckMutex.withLock {
         try {
             val app = application as TalalProApplication
             val repo = app.repository
@@ -161,13 +166,19 @@ class RouterMonitorForegroundService : Service() {
             } else {
                 routerDao.getAllRoutersList()
             }
-            if (routers.isEmpty()) return
+            if (routers.isEmpty()) return@withLock
 
             val configuredId = RouterMonitorManager.state.value.targetRouterId
             val targetRouters = if (configuredId > 0L) {
                 routers.filter { it.id == configuredId }.ifEmpty { routers.take(1) }
             } else {
                 routers.filter { it.isOnline }.ifEmpty { routers.take(1) }
+            }
+
+            val now = System.currentTimeMillis()
+            // Prune stale cooldown entries older than 1 hour
+            if (lastNotifiedTimestamps.size > 500) {
+                lastNotifiedTimestamps.entries.removeIf { now - it.value > 3_600_000L }
             }
 
             for (router in targetRouters) {
@@ -177,7 +188,14 @@ class RouterMonitorForegroundService : Service() {
                     username = router.username,
                     password = router.password
                 )
-                val activeSessions = client.fetchActiveCardSessions()
+                val pollResult = client.fetchActiveCardSessionsSafe()
+                if (!pollResult.isSuccess) {
+                    // Crucial fix: Do NOT wipe knownSessionKeysByRouter on transient connection/timeout error!
+                    Log.w(tag, "Skipping login check for router ${router.name}: poll failed")
+                    continue
+                }
+
+                val activeSessions = pollResult.sessions
                 val currentKeys = activeSessions.map { it.uniqueKey }.toSet()
 
                 if (!baselineInitializedRouters.contains(router.id)) {
@@ -188,12 +206,20 @@ class RouterMonitorForegroundService : Service() {
                 }
 
                 val previousKeys = knownSessionKeysByRouter[router.id] ?: emptySet()
-                val newLogins = activeSessions.filter { it.uniqueKey !in previousKeys }
+                val newLogins = activeSessions.filter { session ->
+                    val cooldownKey = "${router.id}|${session.uniqueKey}"
+                    val lastNotified = lastNotifiedTimestamps[cooldownKey] ?: 0L
+                    val pastCooldown = (now - lastNotified) > notificationCooldownMs
+                    session.uniqueKey !in previousKeys && pastCooldown
+                }
                 knownSessionKeysByRouter[router.id] = currentKeys
 
                 if (newLogins.isNotEmpty()) {
                     // Limit simultaneous burst notifications if many users connect at the exact same second
                     newLogins.take(5).forEachIndexed { idx, session ->
+                        val cooldownKey = "${router.id}|${session.uniqueKey}"
+                        lastNotifiedTimestamps[cooldownKey] = now
+
                         val notifId = (50000 + (session.uniqueKey.hashCode() and 0x7FFF) + idx)
                         NotificationHelper.showNewCardLoginNotification(
                             context = this,

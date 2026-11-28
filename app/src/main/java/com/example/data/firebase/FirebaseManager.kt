@@ -88,6 +88,7 @@ data class FirebaseUserAccount(
 data class FirebaseAppConfig(
     val freeTrialDaysDefault: Int = 30,
     val isTrialEnabled: Boolean = true,
+    val allowGuestAccess: Boolean = false,
     val systemNotice: String = "",
     val isMaintenanceMode: Boolean = false,
     val enabledTabs: List<String> = listOf("DASHBOARD", "ROUTERS", "DEVICES", "USER_MANAGER", "HOTSPOT", "CARD_DESIGNER", "MAP", "TELEGRAM", "TOOLS", "ASSISTANT", "ISSUES"),
@@ -189,6 +190,7 @@ class FirebaseManager(private val context: Context) {
                 FirebaseAppConfig(
                     freeTrialDaysDefault = json.optInt("freeTrialDaysDefault", 30),
                     isTrialEnabled = json.optBoolean("isTrialEnabled", true),
+                    allowGuestAccess = json.optBoolean("allowGuestAccess", false),
                     systemNotice = json.optString("systemNotice", ""),
                     isMaintenanceMode = json.optBoolean("isMaintenanceMode", false),
                     developerName = json.optString("developerName", "عبدالحميد داوؤد"),
@@ -213,6 +215,7 @@ class FirebaseManager(private val context: Context) {
             val json = JSONObject().apply {
                 put("freeTrialDaysDefault", config.freeTrialDaysDefault)
                 put("isTrialEnabled", config.isTrialEnabled)
+                put("allowGuestAccess", config.allowGuestAccess)
                 put("systemNotice", config.systemNotice)
                 put("isMaintenanceMode", config.isMaintenanceMode)
                 put("developerName", config.developerName)

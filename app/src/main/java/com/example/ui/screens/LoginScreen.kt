@@ -76,6 +76,7 @@ fun LoginScreen(
 
     val isCheckingAuth by viewModel.isCheckingAuth.collectAsState()
     val authErrorMsg by viewModel.authError.collectAsState()
+    val appConfig by viewModel.appConfig.collectAsState()
 
     // Location Permission Launcher
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -177,6 +178,27 @@ fun LoginScreen(
                     fontWeight = FontWeight.Medium,
                     color = TextSecondaryLight
                 )
+            }
+
+            if (appConfig.allowGuestAccess) {
+                Button(
+                    onClick = { viewModel.enterGuestMode(initialSilent = false) },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 52.dp)
+                        .testTag("guest_mode_enter_button")
+                ) {
+                    Icon(Icons.Default.RocketLaunch, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "الدخول المباشر للتطبيق بدون تسجيل",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
 
             // Top Two Professional Navigation Tabs

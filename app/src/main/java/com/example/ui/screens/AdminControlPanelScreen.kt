@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -1111,6 +1112,42 @@ fun AppConfigTab(
                         checked = config.isMaintenanceMode,
                         onCheckedChange = { config = config.copy(isMaintenanceMode = it) }
                     )
+
+                    HorizontalDivider(color = BorderLight.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (config.allowGuestAccess) Color(0xFFECFDF5) else Color(0xFFF8FAFC),
+                        border = BorderStroke(
+                            1.dp,
+                            if (config.allowGuestAccess) Color(0xFF10B981) else Color(0xFFCBD5E1)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            ConfigSwitchRow(
+                                title = "تشغيل التطبيق بدون التسجيل والدخول",
+                                subtitle = "السماح بفتح التطبيق وإدارة الشبكة مباشرة للجميع بدون شاشة تسجيل الدخول أو التفعيل",
+                                checked = config.allowGuestAccess,
+                                onCheckedChange = { enabled ->
+                                    val updated = config.copy(allowGuestAccess = enabled)
+                                    config = updated
+                                    onSaveConfig(updated)
+                                }
+                            )
+                            Text(
+                                text = if (config.allowGuestAccess) {
+                                    "🟢 الحالة الحالية: مفعّل — يدخل التطبيق مباشرة بدون طلب حساب"
+                                } else {
+                                    "🔒 الحالة الحالية: معطّل — يتطلب تسجيل الدخول وتفعيل الحساب"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (config.allowGuestAccess) Color(0xFF047857) else TextSecondaryLight,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 

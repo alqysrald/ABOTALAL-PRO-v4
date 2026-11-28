@@ -43,7 +43,7 @@ fun ActiveUsersScreen(
     val hotspotProfiles by viewModel.hotspotProfiles.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf("ALL") } // ALL, PHONE, PC, TV
+    var selectedFilter by remember { mutableStateOf("ALL") } // ALL, USER_MANAGER, HOTSPOT, PHONE, PC, TV
     var showRouterDropdown by remember { mutableStateOf(false) }
 
     // Dialog States
@@ -71,6 +71,8 @@ fun ActiveUsersScreen(
                     dev.deviceType.contains(searchQuery, ignoreCase = true)
 
             val matchFilter = when (selectedFilter) {
+                "USER_MANAGER" -> dev.type == "USER_MANAGER"
+                "HOTSPOT" -> dev.type != "USER_MANAGER"
                 "PHONE" -> dev.deviceType.contains("هاتف") || dev.deviceType.contains("iOS") || dev.deviceType.contains("Android")
                 "PC" -> dev.deviceType.contains("كمبيوتر") || dev.deviceType.contains("لابتوب") || dev.deviceType.contains("Windows")
                 "TV" -> dev.deviceType.contains("شاشة") || dev.deviceType.contains("تلفاز") || dev.deviceType.contains("TV")
@@ -260,34 +262,60 @@ fun ActiveUsersScreen(
                         }
                     }
 
-                    // Filter Chips
-                    Row(
+                    // Filter Chips (including Server Type: User Manager vs Hotspot)
+                    androidx.compose.foundation.lazy.LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        FilterChip(
-                            selected = selectedFilter == "ALL",
-                            onClick = { selectedFilter = "ALL" },
-                            label = { Text("الكل (${activeDevices.size})", fontSize = 11.sp) }
-                        )
-                        FilterChip(
-                            selected = selectedFilter == "PHONE",
-                            onClick = { selectedFilter = "PHONE" },
-                            label = { Text("هواتف", fontSize = 11.sp) },
-                            leadingIcon = { Icon(Icons.Default.PhoneIphone, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                        )
-                        FilterChip(
-                            selected = selectedFilter == "PC",
-                            onClick = { selectedFilter = "PC" },
-                            label = { Text("كمبيوتر", fontSize = 11.sp) },
-                            leadingIcon = { Icon(Icons.Default.Laptop, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                        )
-                        FilterChip(
-                            selected = selectedFilter == "TV",
-                            onClick = { selectedFilter = "TV" },
-                            label = { Text("شاشات وأخرى", fontSize = 11.sp) },
-                            leadingIcon = { Icon(Icons.Default.Tv, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                        )
+                        item {
+                            FilterChip(
+                                selected = selectedFilter == "ALL",
+                                onClick = { selectedFilter = "ALL" },
+                                label = { Text("الكل (${activeDevices.size})", fontSize = 11.sp) }
+                            )
+                        }
+                        item {
+                            val umCount = activeDevices.count { it.type == "USER_MANAGER" }
+                            FilterChip(
+                                selected = selectedFilter == "USER_MANAGER",
+                                onClick = { selectedFilter = "USER_MANAGER" },
+                                label = { Text("يوزرمانجر ($umCount)", fontSize = 11.sp) },
+                                leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            )
+                        }
+                        item {
+                            val hsCount = activeDevices.count { it.type != "USER_MANAGER" }
+                            FilterChip(
+                                selected = selectedFilter == "HOTSPOT",
+                                onClick = { selectedFilter = "HOTSPOT" },
+                                label = { Text("هوتسبوت ($hsCount)", fontSize = 11.sp) },
+                                leadingIcon = { Icon(Icons.Default.WifiTethering, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = selectedFilter == "PHONE",
+                                onClick = { selectedFilter = "PHONE" },
+                                label = { Text("هواتف", fontSize = 11.sp) },
+                                leadingIcon = { Icon(Icons.Default.PhoneIphone, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = selectedFilter == "PC",
+                                onClick = { selectedFilter = "PC" },
+                                label = { Text("كمبيوتر", fontSize = 11.sp) },
+                                leadingIcon = { Icon(Icons.Default.Laptop, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = selectedFilter == "TV",
+                                onClick = { selectedFilter = "TV" },
+                                label = { Text("شاشات", fontSize = 11.sp) },
+                                leadingIcon = { Icon(Icons.Default.Tv, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            )
+                        }
                     }
                 }
             }
@@ -553,14 +581,14 @@ private fun ActiveDeviceCardItem(
                     }
                 }
 
-                // Connection Type Badge
+                // Connection Type Badge (User Manager vs Hotspot)
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = Color(0xFFEFF6FF)
+                    color = if (device.type == "USER_MANAGER") Color(0xFFDBEAFE) else Color(0xFFFEF3C7)
                 ) {
                     Text(
                         text = if (device.type == "USER_MANAGER") "يوزرمانجر" else "هوتسبوت",
-                        color = PrimaryBlue,
+                        color = if (device.type == "USER_MANAGER") Color(0xFF1D4ED8) else Color(0xFFD97706),
                         fontWeight = FontWeight.Bold,
                         fontSize = 10.sp,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -641,11 +669,16 @@ private fun ActiveDeviceCardItem(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        val quotaColor = when {
+                            device.remainingQuota.contains("نفذ") -> Color(0xFFDC2626)
+                            device.remainingQuota.contains("بلا حد") || device.remainingQuota.contains("مفتوح") -> Color(0xFFD97706)
+                            else -> Color(0xFF16A34A)
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.DataUsage, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.DataUsage, contentDescription = null, tint = quotaColor, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("الرصيد المتبقي: ", fontSize = 11.sp, color = TextSecondaryLight)
-                            Text(device.remainingQuota, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF16A34A))
+                            Text("المتبقي: ", fontSize = 11.sp, color = TextSecondaryLight)
+                            Text(device.remainingQuota, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = quotaColor)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.SwapVert, contentDescription = null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(14.dp))

@@ -1,189 +1,248 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.ui.ScreenTab
 import com.example.ui.theme.*
 
 @Composable
 fun TalalProTopBar(
-    isAdmin: Boolean,
     soundEnabled: Boolean,
     unreadAlertsCount: Int,
     onToggleDrawer: () -> Unit,
     onToggleSound: () -> Unit,
     onOpenNotifications: () -> Unit,
-    onOpenAdminPanel: () -> Unit,
+    onOpenPowerControl: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = Color.White,
-        contentColor = TextPrimaryLight,
-        shadowElevation = 2.dp,
+        color = Color(0xFF0F172A),
+        contentColor = Color.White,
+        shadowElevation = 6.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Menu Icon (Left)
-            IconButton(
-                onClick = onToggleDrawer,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFFF1F5F9))
-                    .testTag("drawer_menu_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "القائمة",
-                    tint = PrimaryNavy
-                )
-            }
-
-            // Center group: Admin button (if admin) + Sound toggle + Notifications
+        Column {
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // ADMIN BUTTON (Shown only when admin is logged in)
-                if (isAdmin) {
+                // Right/Start: SVG Menu Button + Brand Identity
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
                     Surface(
-                        onClick = onOpenAdminPanel,
-                        shape = RoundedCornerShape(20.dp),
-                        color = Color(0xFFEF4444),
-                        modifier = Modifier.testTag("admin_panel_button")
+                        onClick = onToggleDrawer,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF1E293B),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .size(48.dp)
+                            .testTag("drawer_menu_button")
                     ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_svg_menu),
+                                contentDescription = "فتح القائمة الجانبية",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Column {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.AdminPanelSettings,
-                                contentDescription = "لوحة التحكم",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
                             Text(
-                                text = "لوحة التحكم",
+                                text = "TALAL PRO",
                                 color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.8.sp,
+                                maxLines = 1
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF0284C7).copy(alpha = 0.25f),
+                                border = BorderStroke(0.8.dp, Color(0xFF38BDF8).copy(alpha = 0.5f))
+                            ) {
+                                Text(
+                                    text = "v4.2",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "إدارة شبكات المايكروتك",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Left/End: Luxury SVG Action Icon Strip (Sound | Notifications | Power Control | Logout)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // 1. Sound Toggle SVG Icon
+                    Surface(
+                        onClick = onToggleSound,
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (soundEnabled) Color(0xFF4C1D95).copy(alpha = 0.45f) else Color(0xFF1E293B),
+                        border = BorderStroke(
+                            1.dp,
+                            if (soundEnabled) Color(0xFF8B5CF6) else Color(0xFF334155)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .size(48.dp)
+                            .testTag("toggle_sound_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                painter = painterResource(
+                                    id = if (soundEnabled) R.drawable.ic_svg_sound_on else R.drawable.ic_svg_sound_off
+                                ),
+                                contentDescription = if (soundEnabled) "إيقاف صوت التنبيهات" else "تفعيل صوت التنبيهات",
+                                tint = if (soundEnabled) Color(0xFFC4B5FD) else Color(0xFF94A3B8),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                }
 
-                // Sound Toggle Button
-                Surface(
-                    onClick = onToggleSound,
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (soundEnabled) Color(0xFFEDE9FE) else Color(0xFFF1F5F9),
-                    border = borderIf(soundEnabled, Color(0xFF8B5CF6), 1.dp),
-                    modifier = Modifier.testTag("toggle_sound_button")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    // 2. Notifications SVG Icon with Badge
+                    Surface(
+                        onClick = onOpenNotifications,
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (unreadAlertsCount > 0) Color(0xFF065F46).copy(alpha = 0.45f) else Color(0xFF1E293B),
+                        border = BorderStroke(
+                            1.dp,
+                            if (unreadAlertsCount > 0) Color(0xFF10B981) else Color(0xFF334155)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .size(48.dp)
+                            .testTag("notifications_button")
                     ) {
-                        Icon(
-                            imageVector = if (soundEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                            contentDescription = "الصوت",
-                            tint = if (soundEnabled) Color(0xFF7C3AED) else TextMutedLight,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (soundEnabled) "صوت مفعّل" else "صوت صامت",
-                            color = if (soundEnabled) Color(0xFF6D28D9) else TextSecondaryLight,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-
-                // Notifications Button
-                Surface(
-                    onClick = onOpenNotifications,
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (unreadAlertsCount > 0) Color(0xFFDCFCE7) else Color(0xFFF1F5F9),
-                    border = borderIf(unreadAlertsCount > 0, Color(0xFF10B981), 1.dp),
-                    modifier = Modifier.testTag("notifications_button")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        BadgedBox(
-                            badge = {
-                                if (unreadAlertsCount > 0) {
-                                    Badge(
-                                        containerColor = Color(0xFFEF4444),
-                                        contentColor = Color.White
-                                    ) {
-                                        Text(text = "$unreadAlertsCount", fontSize = 9.sp)
+                        Box(contentAlignment = Alignment.Center) {
+                            BadgedBox(
+                                badge = {
+                                    if (unreadAlertsCount > 0) {
+                                        Badge(
+                                            containerColor = Color(0xFFEF4444),
+                                            contentColor = Color.White
+                                        ) {
+                                            Text(
+                                                text = if (unreadAlertsCount > 99) "99+" else "$unreadAlertsCount",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_svg_notifications),
+                                    contentDescription = "عرض الإشعارات والتنبيهات",
+                                    tint = if (unreadAlertsCount > 0) Color(0xFF34D399) else Color(0xFFCBD5E1),
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
-                        ) {
+                        }
+                    }
+
+                    // 3. Router Power (Shutdown / Reboot) SVG Icon
+                    Surface(
+                        onClick = onOpenPowerControl,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF78350F).copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.7f)),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .size(48.dp)
+                            .testTag("router_power_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Default.Notifications,
-                                contentDescription = "التنبيهات",
-                                tint = if (unreadAlertsCount > 0) Color(0xFF059669) else TextSecondaryLight,
-                                modifier = Modifier.size(16.dp)
+                                painter = painterResource(id = R.drawable.ic_svg_power),
+                                contentDescription = "إيقاف أو إعادة تشغيل الراوتر",
+                                tint = Color(0xFFFBBF24),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        Text(
-                            text = "التنبيهات",
-                            color = if (unreadAlertsCount > 0) Color(0xFF047857) else TextSecondaryLight,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                    }
+
+                    // 4. Logout SVG Icon
+                    Surface(
+                        onClick = onLogout,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF7F1D1D).copy(alpha = 0.4f),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .size(48.dp)
+                            .testTag("logout_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_svg_logout),
+                                contentDescription = "تسجيل الخروج أو تبديل الحساب",
+                                tint = Color(0xFFFCA5A5),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
-
-            // Logout Pill (Right)
-            Surface(
-                onClick = onLogout,
-                shape = RoundedCornerShape(20.dp),
-                color = Color(0xFFFEE2E2),
-                modifier = Modifier.testTag("logout_button")
-            ) {
-                Text(
-                    text = "خروج",
-                    color = Color(0xFFB91C1C),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                )
-            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                Color(0xFF1E293B),
+                                Color(0xFF38BDF8).copy(alpha = 0.45f),
+                                Color(0xFF1E293B)
+                            )
+                        )
+                    )
+            )
         }
     }
 }
@@ -195,72 +254,75 @@ fun TalalProBottomBar(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = Color.White,
-        contentColor = TextPrimaryLight,
-        shadowElevation = 8.dp,
+        color = Color(0xFF0F172A),
+        contentColor = Color.White,
+        shadowElevation = 10.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(vertical = 6.dp, horizontal = 4.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            BottomNavItemLight(
-                icon = Icons.Default.GridView,
-                label = "لوحة القيادة",
-                isSelected = currentTab == ScreenTab.DASHBOARD,
-                onClick = { onTabSelected(ScreenTab.DASHBOARD) },
-                testTag = "tab_dashboard"
-            )
+        Column {
+            HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BottomNavItemLuxury(
+                    icon = Icons.Default.GridView,
+                    label = "القيادة",
+                    isSelected = currentTab == ScreenTab.DASHBOARD,
+                    onClick = { onTabSelected(ScreenTab.DASHBOARD) },
+                    testTag = "tab_dashboard"
+                )
 
-            BottomNavItemLight(
-                icon = Icons.Default.Dns,
-                label = "الراوترات",
-                isSelected = currentTab == ScreenTab.ROUTERS,
-                onClick = { onTabSelected(ScreenTab.ROUTERS) },
-                testTag = "tab_routers"
-            )
+                BottomNavItemLuxury(
+                    icon = Icons.Default.Dns,
+                    label = "الراوترات",
+                    isSelected = currentTab == ScreenTab.ROUTERS,
+                    onClick = { onTabSelected(ScreenTab.ROUTERS) },
+                    testTag = "tab_routers"
+                )
 
-            BottomNavItemLight(
-                icon = Icons.Default.Hub,
-                label = "أجهزة الشبكة",
-                isSelected = currentTab == ScreenTab.DEVICES,
-                onClick = { onTabSelected(ScreenTab.DEVICES) },
-                testTag = "tab_devices"
-            )
+                BottomNavItemLuxury(
+                    icon = Icons.Default.Hub,
+                    label = "الأجهزة",
+                    isSelected = currentTab == ScreenTab.DEVICES,
+                    onClick = { onTabSelected(ScreenTab.DEVICES) },
+                    testTag = "tab_devices"
+                )
 
-            BottomNavItemLight(
-                icon = Icons.Default.Map,
-                label = "الخريطة",
-                isSelected = currentTab == ScreenTab.MAP,
-                onClick = { onTabSelected(ScreenTab.MAP) },
-                testTag = "tab_map"
-            )
+                BottomNavItemLuxury(
+                    icon = Icons.Default.Map,
+                    label = "الخريطة",
+                    isSelected = currentTab == ScreenTab.MAP,
+                    onClick = { onTabSelected(ScreenTab.MAP) },
+                    testTag = "tab_map"
+                )
 
-            BottomNavItemLight(
-                icon = Icons.Default.SmartToy,
-                label = "المساعد",
-                isSelected = currentTab == ScreenTab.ASSISTANT,
-                onClick = { onTabSelected(ScreenTab.ASSISTANT) },
-                testTag = "tab_assistant"
-            )
+                BottomNavItemLuxury(
+                    icon = Icons.Default.SmartToy,
+                    label = "المساعد",
+                    isSelected = currentTab == ScreenTab.ASSISTANT,
+                    onClick = { onTabSelected(ScreenTab.ASSISTANT) },
+                    testTag = "tab_assistant"
+                )
 
-            BottomNavItemLight(
-                icon = Icons.Default.Shield,
-                label = "المشاكل",
-                isSelected = currentTab == ScreenTab.ISSUES,
-                onClick = { onTabSelected(ScreenTab.ISSUES) },
-                testTag = "tab_issues"
-            )
+                BottomNavItemLuxury(
+                    icon = Icons.Default.Shield,
+                    label = "المشاكل",
+                    isSelected = currentTab == ScreenTab.ISSUES,
+                    onClick = { onTabSelected(ScreenTab.ISSUES) },
+                    testTag = "tab_issues"
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun BottomNavItemLight(
+private fun BottomNavItemLuxury(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     isSelected: Boolean,
@@ -271,29 +333,26 @@ private fun BottomNavItemLight(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
         modifier = Modifier
+            .minimumInteractiveComponentSize()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) PrimaryBlue.copy(alpha = 0.12f) else Color.Transparent)
+            .background(if (isSelected) Color(0xFF38BDF8).copy(alpha = 0.16f) else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
             .testTag(testTag)
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = if (isSelected) PrimaryBlue else TextMutedLight,
+            tint = if (isSelected) Color(0xFF38BDF8) else Color(0xFF94A3B8),
             modifier = Modifier.size(20.dp)
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = label,
             fontSize = 10.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) PrimaryBlue else TextSecondaryLight,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            color = if (isSelected) Color(0xFF38BDF8) else Color(0xFFCBD5E1),
             maxLines = 1
         )
     }
-}
-
-private fun borderIf(condition: Boolean, color: Color, width: androidx.compose.ui.unit.Dp): androidx.compose.foundation.BorderStroke? {
-    return if (condition) androidx.compose.foundation.BorderStroke(width, color) else null
 }

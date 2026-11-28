@@ -15,11 +15,14 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -93,6 +96,7 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
 
     var navState by remember { mutableStateOf(MainNavigationState.APP_MAIN) }
     var showExitDialog by remember { mutableStateOf(false) }
+    var showPowerControlDialog by remember { mutableStateOf(false) }
 
     val showAddRouter by viewModel.showAddRouterDialog.collectAsState()
     val showCloudGuide by viewModel.showCloudGuideDialog.collectAsState()
@@ -187,6 +191,7 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
                 onNavigateToAdmin = {
                     navState = MainNavigationState.ADMIN_PANEL
                 },
+                onOpenPowerControl = { showPowerControlDialog = true },
                 onCloseDrawer = { scope.launch { drawerState.close() } }
             )
         }
@@ -194,7 +199,6 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
         Scaffold(
             topBar = {
                 TalalProTopBar(
-                    isAdmin = isAdmin,
                     soundEnabled = soundEnabled,
                     unreadAlertsCount = unreadAlertsCount,
                     onToggleDrawer = {
@@ -204,7 +208,7 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
                     },
                     onToggleSound = { viewModel.toggleSound() },
                     onOpenNotifications = { viewModel.showNotificationsDialog.value = true },
-                    onOpenAdminPanel = { navState = MainNavigationState.ADMIN_PANEL },
+                    onOpenPowerControl = { showPowerControlDialog = true },
                     onLogout = { viewModel.logout() }
                 )
             },
@@ -380,4 +384,226 @@ fun TalalProMainApp(viewModel: TalalProViewModel) {
             }
         )
     }
+
+    if (showPowerControlDialog) {
+        RouterPowerControlDialog(
+            routers = routers,
+            onDismiss = { showPowerControlDialog = false },
+            onReboot = { r ->
+                viewModel.rebootRouter(r)
+                showPowerControlDialog = false
+            },
+            onShutdown = { r ->
+                viewModel.shutdownRouter(r)
+                showPowerControlDialog = false
+            }
+        )
+    }
 }
+
+@Composable
+private fun RouterPowerControlDialog(
+    routers: List<com.example.data.model.RouterEntity>,
+    onDismiss: () -> Unit,
+    onReboot: (com.example.data.model.RouterEntity) -> Unit,
+    onShutdown: (com.example.data.model.RouterEntity) -> Unit
+) {
+    var selectedRouter by remember(routers) { mutableStateOf(routers.firstOrNull { it.isOnline } ?: routers.firstOrNull()) }
+    var routerDropdownExpanded by remember { mutableStateOf(false) }
+    var pendingConfirmAction by remember { mutableStateOf<String?>(null) } // "REBOOT" or "SHUTDOWN"
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = Color(0xFF0F172A),
+            border = BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.PowerSettingsNew,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFBBF24),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "التحكم بطاقة الراوتر",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "إعادة تشغيل أو إيقاف تشغيل راوتر المايكروتك",
+                                fontSize = 11.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+                }
+
+                if (routers.isEmpty()) {
+                    Text(
+                        text = "لا توجد راوترات مضافة حالياً. أضف راوتر أولاً.",
+                        color = Color(0xFFFCA5A5),
+                        fontSize = 12.sp
+                    )
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    ) {
+                        Text("إغلاق", color = Color.White)
+                    }
+                } else {
+                    Box {
+                        OutlinedCard(
+                            onClick = { routerDropdownExpanded = true },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF334155)),
+                            colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFF1E293B)),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = selectedRouter?.let { "${it.name} (${it.host})" } ?: "اختر الراوتر",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    text = if (selectedRouter?.isOnline == true) "متصل" else "غير متصل",
+                                    color = if (selectedRouter?.isOnline == true) Color(0xFF34D399) else Color(0xFFFCA5A5),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = routerDropdownExpanded,
+                            onDismissRequest = { routerDropdownExpanded = false },
+                            modifier = Modifier.background(Color(0xFF1E293B))
+                        ) {
+                            routers.forEach { r ->
+                                DropdownMenuItem(
+                                    text = { Text("${r.name} (${r.host})", color = Color.White) },
+                                    onClick = {
+                                        selectedRouter = r
+                                        routerDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    if (pendingConfirmAction != null && selectedRouter != null) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF7F1D1D).copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = if (pendingConfirmAction == "SHUTDOWN") {
+                                        "⚠️ تأكيد إيقاف تشغيل [${selectedRouter!!.name}] كلياً؟ لن يعمل الراوتر إلا بعد إعادة تشغيله يدوياً بالكهرباء!"
+                                    } else {
+                                        "🔄 تأكيد إعادة تشغيل [${selectedRouter!!.name}] الآن؟ سينقطع اتصال المشتركين لمدة 30 ثانية."
+                                    },
+                                    color = Color(0xFFFEE2E2),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { pendingConfirmAction = null },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    ) {
+                                        Text("تراجع", color = Color.White, fontSize = 12.sp)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val r = selectedRouter!!
+                                            if (pendingConfirmAction == "SHUTDOWN") onShutdown(r) else onReboot(r)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    ) {
+                                        Text("تأكيد التنفيذ", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = { pendingConfirmAction = "REBOOT" },
+                            enabled = selectedRouter != null,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("إعادة تشغيل الراوتر (Reboot)", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+
+                        Button(
+                            onClick = { pendingConfirmAction = "SHUTDOWN" },
+                            enabled = selectedRouter != null,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Default.PowerSettingsNew, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("إيقاف تشغيل الراوتر نهائياً (Shutdown)", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Text("إلغاء", color = Color(0xFFCBD5E1))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

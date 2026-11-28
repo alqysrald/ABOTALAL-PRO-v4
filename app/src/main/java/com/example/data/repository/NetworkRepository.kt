@@ -135,6 +135,14 @@ class NetworkRepository(
             .apply()
     }
 
+    fun saveAllowGuestAccessCached(enabled: Boolean) {
+        prefs.edit().putBoolean("allow_guest_access_cached", enabled).apply()
+    }
+
+    fun isAllowGuestAccessCached(): Boolean {
+        return prefs.getBoolean("allow_guest_access_cached", false)
+    }
+
     fun toggleSound(enabled: Boolean? = null) {
         val newState = enabled ?: !_soundEnabled.value
         _soundEnabled.value = newState
@@ -870,21 +878,49 @@ class NetworkRepository(
         return raw.map { map ->
             val bytesInNum = map["bytes-in"]?.toLongOrNull() ?: 0L
             val bytesOutNum = map["bytes-out"]?.toLongOrNull() ?: 0L
-            val totalMb = (bytesInNum + bytesOutNum) / (1024 * 1024)
+            val consumedTotal = map["bytes_consumed_total"]?.toLongOrNull() ?: (bytesInNum + bytesOutNum)
+            val totalMb = consumedTotal / (1024.0 * 1024.0)
             val inMb = bytesInNum / (1024 * 1024)
             val outMb = bytesOutNum / (1024 * 1024)
 
+            val remBytes = map["remaining_bytes"]?.toLongOrNull()
             val limitBytes = map["limit_bytes_total"]?.toLongOrNull()
-            val remainingQuota = if (limitBytes != null && limitBytes > 0) {
-                val remMb = (limitBytes - (bytesInNum + bytesOutNum)) / (1024 * 1024)
-                if (remMb > 1024) "${remMb / 1024} GB متبقية" else "$remMb MB متبقية"
-            } else {
-                "رصيد مفتوح"
+            val remainingQuota = when {
+                remBytes != null && remBytes <= 0L -> "نفذ الرصيد (0 MB)"
+                remBytes != null -> {
+                    val remMb = remBytes.toDouble() / (1024.0 * 1024.0)
+                    if (remMb >= 1024.0) {
+                        String.format(java.util.Locale.ENGLISH, "%.2f GB متبقية", remMb / 1024.0)
+                    } else {
+                        String.format(java.util.Locale.ENGLISH, "%.0f MB متبقية", remMb)
+                    }
+                }
+                limitBytes != null && limitBytes > 0L -> {
+                    val remMb = (limitBytes - consumedTotal).coerceAtLeast(0L).toDouble() / (1024.0 * 1024.0)
+                    if (remMb >= 1024.0) {
+                        String.format(java.util.Locale.ENGLISH, "%.2f GB متبقية", remMb / 1024.0)
+                    } else {
+                        String.format(java.util.Locale.ENGLISH, "%.0f MB متبقية", remMb)
+                    }
+                }
+                else -> "مفتوح (بلا حد)"
             }
 
+            val remSeconds = map["remaining_seconds"]?.toLongOrNull()
             val limitUptime = map["limit_uptime"] ?: ""
             val uptime = map["uptime"] ?: "0s"
-            val remainingTime = if (limitUptime.isNotBlank()) "محدد ($limitUptime)" else "وقت غير محدد"
+            val remainingTime = when {
+                remSeconds != null && remSeconds <= 0L -> "منتهي الوقت"
+                remSeconds != null -> formatRemainingSecondsArabic(remSeconds)
+                limitUptime.isNotBlank() -> "محدد ($limitUptime)"
+                else -> "غير محدد"
+            }
+
+            val totalFormatted = if (totalMb >= 1024.0) {
+                String.format(java.util.Locale.ENGLISH, "%.2f GB", totalMb / 1024.0)
+            } else {
+                String.format(java.util.Locale.ENGLISH, "%.1f MB", totalMb)
+            }
 
             ActiveDeviceEntity(
                 id = map[".id"] ?: "",
@@ -898,11 +934,24 @@ class NetworkRepository(
                 startTime = map["login-by"] ?: "",
                 bytesIn = "$inMb MB",
                 bytesOut = "$outMb MB",
-                totalBytes = "$totalMb MB",
+                totalBytes = totalFormatted,
                 remainingQuota = remainingQuota,
                 remainingTime = remainingTime,
                 profile = map["profile"] ?: "default"
             )
+        }
+    }
+
+    private fun formatRemainingSecondsArabic(totalSeconds: Long): String {
+        val sec = totalSeconds.coerceAtLeast(0L)
+        val days = sec / 86400L
+        val hours = (sec % 86400L) / 3600L
+        val minutes = (sec % 3600L) / 60L
+        val seconds = sec % 60L
+        return when {
+            days > 0L -> "${days}ي ${hours}س ${minutes}د"
+            hours > 0L -> String.format(java.util.Locale.ENGLISH, "%02d:%02d:%02d متبقية", hours, minutes, seconds)
+            else -> String.format(java.util.Locale.ENGLISH, "%02d:%02d متبقية", minutes, seconds)
         }
     }
 
@@ -1387,5 +1436,132 @@ class NetworkRepository(
         }
         return res
     }
+
+    // ================= POWER, ARBITRARY CLI, PROFILES & SPECIAL TOOLS =================
+
+    suspend fun shutdownRouter(router: RouterEntity): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.shutdownRouter()
+        addLog(router.userId, "إيقاف تشغيل الراوتر", "تم إرسال أمر إيقاف التشغيل الكامل للراوتر [${router.name}]", res.isSuccess)
+        return res
+    }
+
+    suspend fun executeArbitraryRouterCommand(router: RouterEntity, rawCommand: String): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.executeArbitraryCommandLine(rawCommand)
+        addLog(
+            router.userId,
+            "تنفيذ أمر مخصص",
+            "الأمر [$rawCommand] على [${router.name}]: ${if (res.isSuccess) "نجاح (${res.results.size} نتيجة)" else res.errorMessage ?: "فشل"}",
+            res.isSuccess
+        )
+        return res
+    }
+
+    suspend fun addUserManagerProfileFull(
+        router: RouterEntity,
+        name: String,
+        validity: String,
+        price: String,
+        rateLimit: String,
+        sharedUsers: Int
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.addUserManagerProfile(name, validity, price, rateLimit, sharedUsers)
+        if (res.isSuccess) syncUserManager(router)
+        return res
+    }
+
+    suspend fun editUserManagerProfile(
+        router: RouterEntity,
+        oldName: String,
+        newName: String,
+        validity: String,
+        price: String,
+        sharedUsers: Int
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.editUserManagerProfile(oldName, newName, validity, price, sharedUsers)
+        if (res.isSuccess) syncUserManager(router)
+        return res
+    }
+
+    suspend fun deleteUserManagerProfile(router: RouterEntity, profileName: String): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.deleteUserManagerProfile(profileName)
+        if (res.isSuccess) syncUserManager(router)
+        return res
+    }
+
+    suspend fun addHotspotProfile(
+        router: RouterEntity,
+        name: String,
+        rateLimit: String,
+        sharedUsers: Int,
+        sessionTimeout: String
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.addHotspotProfile(name, rateLimit, sharedUsers, sessionTimeout)
+        if (res.isSuccess) syncHotspot(router)
+        return res
+    }
+
+    suspend fun editHotspotProfile(
+        router: RouterEntity,
+        oldName: String,
+        newName: String,
+        rateLimit: String,
+        sharedUsers: Int,
+        sessionTimeout: String
+    ): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.editHotspotProfile(oldName, newName, rateLimit, sharedUsers, sessionTimeout)
+        if (res.isSuccess) syncHotspot(router)
+        return res
+    }
+
+    suspend fun deleteHotspotProfile(router: RouterEntity, profileName: String): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.deleteHotspotProfile(profileName)
+        if (res.isSuccess) syncHotspot(router)
+        return res
+    }
+
+    suspend fun toggleBluetoothSharingBlock(router: RouterEntity, enableBlock: Boolean): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.toggleBluetoothSharingBlock(enableBlock)
+        addLog(
+            router.userId,
+            if (enableBlock) "تفعيل منع مشاركة البلوتوث (TTL=1)" else "إلغاء منع مشاركة البلوتوث",
+            "راوتر [${router.name}]: ${if (res.isSuccess) "تم التنفيذ بنجاح" else res.errorMessage ?: "فشل"}",
+            res.isSuccess
+        )
+        return res
+    }
+
+    suspend fun toggleFreeNetworkMode(router: RouterEntity, enableFree: Boolean): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.toggleFreeNetworkMode(enableFree)
+        addLog(
+            router.userId,
+            if (enableFree) "تفعيل الشبكة مجاناً" else "إعادة تفعيل تسجيل الدخول بالكروت",
+            "راوتر [${router.name}]: ${if (res.isSuccess) "تم بنجاح" else res.errorMessage ?: "فشل"}",
+            res.isSuccess
+        )
+        return res
+    }
+
+    suspend fun setHotspotHtmlDirectory(router: RouterEntity, htmlDir: String): MikroTikResponse {
+        val client = MikroTikApiClient(router.host, router.port, router.username, router.password)
+        val res = client.setHotspotHtmlDirectory(htmlDir)
+        addLog(
+            router.userId,
+            "تغيير مجلد HTML للهوتسبوت",
+            "تم تعيين المجلد إلى [$htmlDir] في [${router.name}]",
+            res.isSuccess
+        )
+        return res
+    }
 }
+
 

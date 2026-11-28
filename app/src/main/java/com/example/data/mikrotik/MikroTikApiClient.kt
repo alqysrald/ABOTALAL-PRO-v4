@@ -82,6 +82,12 @@ data class ActiveCardLoginInfo(
     val uptime: String
 )
 
+data class ActiveCardSessionPollResult(
+    val isSuccess: Boolean,
+    val sessions: List<ActiveCardLoginInfo> = emptyList(),
+    val errorMessage: String? = null
+)
+
 class MikroTikApiClient(
     private val host: String,
     private val port: Int = 8728,
@@ -468,7 +474,14 @@ class MikroTikApiClient(
             if (!res.isSuccess || res.results.isEmpty()) {
                 res = executeCommand(inStream, outStream, listOf("/user-manager/user/group/print"))
             }
-            res.results
+            val r = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print"))
+            if (r.isSuccess && r.results.isNotEmpty()) return@withContext r.results
+
+            val resV7 = executeCommand(inStream, outStream, listOf("/user-manager/profile/print"))
+            if (resV7.isSuccess && resV7.results.isNotEmpty()) return@withContext resV7.results
+
+            val resV7Groups = executeCommand(inStream, outStream, listOf("/user-manager/user/group/print"))
+            resV7Groups.results
         } catch (e: Exception) {
             Log.e(tag, "Failed to get user-manager profiles", e)
             emptyList()
@@ -480,7 +493,9 @@ class MikroTikApiClient(
     suspend fun addUserManagerProfile(
         name: String,
         validity: String = "30d",
-        price: String = "0"
+        price: String = "0",
+        rateLimit: String = "",
+        sharedUsers: Int = 1
     ): MikroTikResponse = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         try {
@@ -490,29 +505,117 @@ class MikroTikApiClient(
             val login = performLogin(inStream, outStream)
             if (!login.isSuccess) return@withContext login
 
-            val resV6 = executeCommand(
-                inStream,
-                outStream,
-                listOf(
+            val v6Probe = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print"))
+            if (v6Probe.isSuccess) {
+                val wordsV6 = mutableListOf(
                     "/tool/user-manager/profile/add",
-                    "=customer=admin",
-                    "=name=$name",
-                    "=validity=$validity",
-                    "=price=$price"
+                    "=owner=admin",
+                    "=name=${name.trim()}",
+                    "=name-for-users=${name.trim()}",
+                    "=validity=${validity.ifBlank { "30d" }}",
+                    "=price=${price.ifBlank { "0" }}",
+                    "=override-shared-users=${sharedUsers.coerceAtLeast(1)}"
                 )
-            )
-            if (resV6.isSuccess) return@withContext resV6
+                val resV6 = executeCommand(inStream, outStream, wordsV6)
+                if (resV6.isSuccess) return@withContext resV6
+            }
 
-            executeCommand(
-                inStream,
-                outStream,
-                listOf(
-                    "/user-manager/profile/add",
-                    "=name=$name",
-                    "=validity=$validity",
-                    "=price=$price"
-                )
+            // RouterOS v7 User Manager
+            val wordsV7 = mutableListOf(
+                "/user-manager/profile/add",
+                "=name=${name.trim()}",
+                "=name-for-users=${name.trim()}",
+                "=validity=${validity.ifBlank { "30d" }}",
+                "=price=${price.ifBlank { "0" }}",
+                "=override-shared-users=${sharedUsers.coerceAtLeast(1)}"
             )
+            val resV7 = executeCommand(inStream, outStream, wordsV7)
+            if (resV7.isSuccess && rateLimit.isNotBlank()) {
+                val parts = rateLimit.split("/")
+                val rx = parts.getOrNull(0)?.trim().orEmpty()
+                val tx = parts.getOrNull(1)?.trim().orEmpty()
+                val limName = "Lim_${name.trim()}"
+                val limWords = mutableListOf("/user-manager/limitation/add", "=name=$limName")
+                if (rx.isNotBlank()) limWords.add("=rate-limit-rx=$rx")
+                if (tx.isNotBlank()) limWords.add("=rate-limit-tx=$tx")
+                executeCommand(inStream, outStream, limWords)
+                executeCommand(inStream, outStream, listOf("/user-manager/profile-limitation/add", "=profile=${name.trim()}", "=limitation=$limName"))
+            }
+            resV7
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun editUserManagerProfile(
+        oldName: String,
+        newName: String,
+        validity: String,
+        price: String,
+        sharedUsers: Int = 1
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val findV6 = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print", "?name=${oldName.trim()}"))
+            val idV6 = findV6.results.firstOrNull()?.get(".id")
+            if (findV6.isSuccess && !idV6.isNullOrBlank()) {
+                val words = mutableListOf("/tool/user-manager/profile/set", "=.id=$idV6")
+                if (newName.isNotBlank()) words.add("=name=${newName.trim()}")
+                if (validity.isNotBlank()) words.add("=validity=${validity.trim()}")
+                if (price.isNotBlank()) words.add("=price=${price.trim()}")
+                words.add("=override-shared-users=${sharedUsers.coerceAtLeast(1)}")
+                return@withContext executeCommand(inStream, outStream, words)
+            }
+
+            val findV7 = executeCommand(inStream, outStream, listOf("/user-manager/profile/print", "?name=${oldName.trim()}"))
+            val idV7 = findV7.results.firstOrNull()?.get(".id")
+            if (!idV7.isNullOrBlank()) {
+                val words = mutableListOf("/user-manager/profile/set", "=.id=$idV7")
+                if (newName.isNotBlank()) words.add("=name=${newName.trim()}")
+                if (validity.isNotBlank()) words.add("=validity=${validity.trim()}")
+                if (price.isNotBlank()) words.add("=price=${price.trim()}")
+                words.add("=override-shared-users=${sharedUsers.coerceAtLeast(1)}")
+                return@withContext executeCommand(inStream, outStream, words)
+            }
+
+            MikroTikResponse(isSuccess = false, errorMessage = "لم يتم العثور على الباقة [$oldName] في اليوزرمانجر")
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun deleteUserManagerProfile(profileName: String): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val findV6 = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print", "?name=${profileName.trim()}"))
+            val idV6 = findV6.results.firstOrNull()?.get(".id")
+            if (findV6.isSuccess && !idV6.isNullOrBlank()) {
+                return@withContext executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/remove", "=.id=$idV6"))
+            }
+
+            val findV7 = executeCommand(inStream, outStream, listOf("/user-manager/profile/print", "?name=${profileName.trim()}"))
+            val idV7 = findV7.results.firstOrNull()?.get(".id")
+            if (!idV7.isNullOrBlank()) {
+                return@withContext executeCommand(inStream, outStream, listOf("/user-manager/profile/remove", "=.id=$idV7"))
+            }
+
+            MikroTikResponse(isSuccess = false, errorMessage = "لم يتم العثور على الباقة [$profileName]")
         } catch (e: Exception) {
             MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
         } finally {
@@ -576,6 +679,96 @@ class MikroTikApiClient(
         }
     }
 
+    suspend fun addHotspotProfile(
+        name: String,
+        rateLimit: String = "2M/4M",
+        sharedUsers: Int = 1,
+        sessionTimeout: String = "0s",
+        keepaliveTimeout: String = "2m"
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val words = mutableListOf(
+                "/ip/hotspot/user/profile/add",
+                "=name=${name.trim()}",
+                "=shared-users=${sharedUsers.coerceAtLeast(1)}"
+            )
+            if (rateLimit.isNotBlank()) words.add("=rate-limit=${rateLimit.trim()}")
+            if (sessionTimeout.isNotBlank() && sessionTimeout != "0s") words.add("=session-timeout=${sessionTimeout.trim()}")
+            if (keepaliveTimeout.isNotBlank()) words.add("=keepalive-timeout=${keepaliveTimeout.trim()}")
+            executeCommand(inStream, outStream, words)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun editHotspotProfile(
+        oldName: String,
+        newName: String,
+        rateLimit: String,
+        sharedUsers: Int,
+        sessionTimeout: String
+    ): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val find = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/profile/print", "?name=${oldName.trim()}"))
+            val id = find.results.firstOrNull()?.get(".id")
+            if (id.isNullOrBlank()) {
+                return@withContext MikroTikResponse(isSuccess = false, errorMessage = "لم يتم العثور على باقة الهوتسبوت [$oldName]")
+            }
+
+            val words = mutableListOf(
+                "/ip/hotspot/user/profile/set",
+                "=.id=$id",
+                "=shared-users=${sharedUsers.coerceAtLeast(1)}"
+            )
+            if (newName.isNotBlank()) words.add("=name=${newName.trim()}")
+            if (rateLimit.isNotBlank()) words.add("=rate-limit=${rateLimit.trim()}")
+            if (sessionTimeout.isNotBlank()) words.add("=session-timeout=${sessionTimeout.trim()}")
+            executeCommand(inStream, outStream, words)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun deleteHotspotProfile(profileName: String): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val find = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/profile/print", "?name=${profileName.trim()}"))
+            val id = find.results.firstOrNull()?.get(".id")
+            if (id.isNullOrBlank()) {
+                return@withContext MikroTikResponse(isSuccess = false, errorMessage = "لم يتم العثور على الباقة [$profileName]")
+            }
+            executeCommand(inStream, outStream, listOf("/ip/hotspot/user/profile/remove", "=.id=$id"))
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
     suspend fun addBatchCardsOnRouter(
         serverType: String,
         cards: List<Pair<String, String>>,
@@ -595,71 +788,84 @@ class MikroTikApiClient(
 
             var addedCount = 0
             var lastError: String? = null
+            val cleanProfile = profile.trim()
 
             if (serverType.equals("USER_MANAGER", ignoreCase = true)) {
-                var useV7 = false
-                for ((idx, pair) in cards.withIndex()) {
-                    val (uName, uPass) = pair
-                    if (idx == 0) {
+                // Probe RouterOS v6 vs v7 User Manager path cleanly
+                val v6Probe = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print"))
+                val useV7 = !v6Probe.isSuccess
+
+                // Resolve customer / owner on v6 if needed
+                val v6Customer = if (!useV7) {
+                    val custRes = executeCommand(inStream, outStream, listOf("/tool/user-manager/customer/print"))
+                    custRes.results.firstOrNull()?.get("login")
+                        ?: custRes.results.firstOrNull()?.get("username")
+                        ?: username.ifBlank { "admin" }
+                } else "admin"
+
+                for ((uName, uPass) in cards) {
+                    if (!useV7) {
                         val wordsV6 = mutableListOf(
                             "/tool/user-manager/user/add",
-                            "=customer=admin",
+                            "=customer=$v6Customer",
                             "=username=$uName",
                             "=password=$uPass"
                         )
-                        if (profile.isNotBlank() && profile != "default") wordsV6.add("=actual-profile=$profile")
                         if (comment.isNotBlank()) wordsV6.add("=comment=$comment")
                         val rV6 = executeCommand(inStream, outStream, wordsV6)
                         if (rV6.isSuccess) {
+                            // CRITICAL: Activate the package/profile on RouterOS v6 User Manager!
+                            if (cleanProfile.isNotBlank() && !cleanProfile.equals("default", ignoreCase = true)) {
+                                executeCommand(
+                                    inStream,
+                                    outStream,
+                                    listOf(
+                                        "/tool/user-manager/user/create-and-activate-profile",
+                                        "=numbers=$uName",
+                                        "=profile=$cleanProfile",
+                                        "=customer=$v6Customer"
+                                    )
+                                )
+                            }
                             addedCount++
                         } else {
-                            val wordsV7 = mutableListOf(
-                                "/user-manager/user/add",
-                                "=name=$uName",
-                                "=password=$uPass"
-                            )
-                            if (profile.isNotBlank() && profile != "default") wordsV7.add("=group=$profile")
-                            if (comment.isNotBlank()) wordsV7.add("=comment=$comment")
-                            val rV7 = executeCommand(inStream, outStream, wordsV7)
-                            if (rV7.isSuccess) {
-                                useV7 = true
-                                addedCount++
-                            } else {
-                                lastError = rV7.errorMessage ?: rV6.errorMessage
-                            }
+                            lastError = rV6.errorMessage
                         }
                     } else {
-                        val words = if (!useV7) {
-                            mutableListOf(
-                                "/tool/user-manager/user/add",
-                                "=customer=admin",
-                                "=username=$uName",
-                                "=password=$uPass"
-                            ).apply {
-                                if (profile.isNotBlank() && profile != "default") add("=actual-profile=$profile")
-                                if (comment.isNotBlank()) add("=comment=$comment")
+                        // RouterOS v7 User Manager: add user + assign user-profile
+                        val wordsV7 = mutableListOf(
+                            "/user-manager/user/add",
+                            "=name=$uName",
+                            "=password=$uPass"
+                        )
+                        if (comment.isNotBlank()) wordsV7.add("=comment=$comment")
+                        val rV7 = executeCommand(inStream, outStream, wordsV7)
+                        if (rV7.isSuccess) {
+                            if (cleanProfile.isNotBlank() && !cleanProfile.equals("default", ignoreCase = true)) {
+                                executeCommand(
+                                    inStream,
+                                    outStream,
+                                    listOf(
+                                        "/user-manager/user-profile/add",
+                                        "=user=$uName",
+                                        "=profile=$cleanProfile"
+                                    )
+                                )
                             }
+                            addedCount++
                         } else {
-                            mutableListOf(
-                                "/user-manager/user/add",
-                                "=name=$uName",
-                                "=password=$uPass"
-                            ).apply {
-                                if (profile.isNotBlank() && profile != "default") add("=group=$profile")
-                                if (comment.isNotBlank()) add("=comment=$comment")
-                            }
+                            lastError = rV7.errorMessage
                         }
-                        val r = executeCommand(inStream, outStream, words)
-                        if (r.isSuccess) addedCount++ else lastError = r.errorMessage
                     }
                 }
             } else {
+                val targetProfile = cleanProfile.ifBlank { "default" }
                 for ((uName, uPass) in cards) {
                     val words = mutableListOf(
                         "/ip/hotspot/user/add",
                         "=name=$uName",
                         "=password=$uPass",
-                        "=profile=${profile.ifBlank { "default" }}"
+                        "=profile=$targetProfile"
                     )
                     if (comment.isNotBlank()) words.add("=comment=$comment")
                     val r = executeCommand(inStream, outStream, words)
@@ -1028,46 +1234,371 @@ class MikroTikApiClient(
             val login = performLogin(inStream, outStream)
             if (!login.isSuccess) return@withContext emptyList()
 
-            // 1. Hotspot active sessions
+            // 1. Hotspot active sessions, users, profiles
             val hotspotAct = executeCommand(inStream, outStream, listOf("/ip/hotspot/active/print")).results
-
-            // 2. DHCP Leases for host-names
             val dhcpLeases = executeCommand(inStream, outStream, listOf("/ip/dhcp-server/lease/print")).results
-            val leaseByMac = dhcpLeases.associateBy { (it["active-mac-address"] ?: it["mac-address"] ?: "").uppercase() }
-
-            // 3. Hotspot users for limits and remaining
             val hsUsers = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
-            val userByName = hsUsers.associateBy { it["name"] ?: "" }
+            val hsProfiles = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/profile/print")).results
 
-            // Combine into enriched list
+            val leaseByMac = mutableMapOf<String, Map<String, String>>()
+            val leaseByIp = mutableMapOf<String, Map<String, String>>()
+            for (lease in dhcpLeases) {
+                val lMac = (lease["active-mac-address"] ?: lease["mac-address"] ?: "").uppercase()
+                val lIp = lease["active-address"] ?: lease["address"] ?: ""
+                if (lMac.isNotBlank()) leaseByMac[lMac] = lease
+                if (lIp.isNotBlank()) leaseByIp[lIp] = lease
+            }
+
+            val hsUserByName = hsUsers.associateBy { it["name"]?.trim() ?: "" }
+            val hsProfileByName = hsProfiles.associateBy { it["name"]?.trim() ?: "" }
+
+            // 2. User Manager data (v6 & v7) for accurate card type, quota, and remaining time
+            val umUserMap = mutableMapOf<String, Map<String, String>>()
+            val umActiveProfileByUser = mutableMapOf<String, String>()
+            val umQuotaLimitByProfile = mutableMapOf<String, Long>()
+            val umTimeLimitByProfile = mutableMapOf<String, Long>()
+            val umValidityByProfile = mutableMapOf<String, String>()
+            val umSessionByUser = mutableMapOf<String, Map<String, String>>()
+
+            val v6ProfRes = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print"))
+            if (v6ProfRes.isSuccess) {
+                // RouterOS v6 UM
+                for (p in v6ProfRes.results) {
+                    val pName = p["name"]?.trim() ?: ""
+                    val validity = p["validity"]?.trim() ?: ""
+                    if (pName.isNotBlank() && validity.isNotBlank()) {
+                        umValidityByProfile[pName] = validity
+                    }
+                }
+                val v6Users = executeCommand(inStream, outStream, listOf("/tool/user-manager/user/print")).results
+                for (u in v6Users) {
+                    val uName = (u["username"] ?: u["name"] ?: "").trim()
+                    if (uName.isNotBlank()) {
+                        umUserMap[uName] = u
+                        val p = (u["actual-profile"] ?: u["profile"] ?: "").trim()
+                        if (p.isNotBlank()) umActiveProfileByUser[uName] = p
+                    }
+                }
+                val v6ProfLim = executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/limitation/print")).results
+                val v6Lims = executeCommand(inStream, outStream, listOf("/tool/user-manager/limitation/print")).results
+                val limByIdOrName = mutableMapOf<String, Map<String, String>>()
+                for (l in v6Lims) {
+                    l["name"]?.let { limByIdOrName[it] = l }
+                    l[".id"]?.let { limByIdOrName[it] = l }
+                }
+                for (pl in v6ProfLim) {
+                    val prof = pl["profile"] ?: continue
+                    val limRef = pl["limitation"] ?: continue
+                    val lim = limByIdOrName[limRef] ?: continue
+                    val txLim = parseMikrotikBytes(lim["transfer-limit"])
+                        ?: ((parseMikrotikBytes(lim["download-limit"]) ?: 0L) + (parseMikrotikBytes(lim["upload-limit"]) ?: 0L)).takeIf { it > 0L }
+                    if (txLim != null && txLim > 0L) {
+                        umQuotaLimitByProfile[prof] = (umQuotaLimitByProfile[prof] ?: 0L).coerceAtLeast(txLim)
+                    }
+                    val upLim = parseMikrotikDurationToSeconds(lim["uptime-limit"])
+                    if (upLim != null && upLim > 0L) {
+                        umTimeLimitByProfile[prof] = (umTimeLimitByProfile[prof] ?: 0L).coerceAtLeast(upLim)
+                    }
+                }
+                val v6Sessions = executeCommand(inStream, outStream, listOf("/tool/user-manager/session/print", "?active=true")).results
+                for (s in v6Sessions) {
+                    val u = (s["user"] ?: s["username"] ?: "").trim()
+                    if (u.isNotBlank()) umSessionByUser[u] = s
+                }
+            } else {
+                // RouterOS v7 UM
+                val v7Profs = executeCommand(inStream, outStream, listOf("/user-manager/profile/print")).results
+                for (p in v7Profs) {
+                    val pName = p["name"]?.trim() ?: ""
+                    val validity = p["validity"]?.trim() ?: ""
+                    if (pName.isNotBlank() && validity.isNotBlank()) umValidityByProfile[pName] = validity
+                }
+                val v7Users = executeCommand(inStream, outStream, listOf("/user-manager/user/print")).results
+                for (u in v7Users) {
+                    val uName = (u["name"] ?: u["username"] ?: "").trim()
+                    if (uName.isNotBlank()) umUserMap[uName] = u
+                }
+                val v7UserProfs = executeCommand(inStream, outStream, listOf("/user-manager/user-profile/print")).results
+                for (up in v7UserProfs) {
+                    val u = up["user"]?.trim() ?: ""
+                    val p = up["profile"]?.trim() ?: ""
+                    val st = up["state"]?.trim() ?: ""
+                    if (u.isNotBlank() && p.isNotBlank() && st != "used") {
+                        if (!umActiveProfileByUser.containsKey(u) || st == "running-active") {
+                            umActiveProfileByUser[u] = p
+                        }
+                    }
+                }
+                val v7Lims = executeCommand(inStream, outStream, listOf("/user-manager/limitation/print")).results
+                val limByIdOrName = mutableMapOf<String, Map<String, String>>()
+                for (l in v7Lims) {
+                    l["name"]?.let { limByIdOrName[it] = l }
+                    l[".id"]?.let { limByIdOrName[it] = l }
+                }
+                val v7ProfLim = executeCommand(inStream, outStream, listOf("/user-manager/profile-limitation/print")).results
+                for (pl in v7ProfLim) {
+                    val prof = pl["profile"] ?: continue
+                    val limRef = pl["limitation"] ?: continue
+                    val lim = limByIdOrName[limRef] ?: continue
+                    val txLim = parseMikrotikBytes(lim["transfer-limit"])
+                        ?: ((parseMikrotikBytes(lim["download-limit"]) ?: 0L) + (parseMikrotikBytes(lim["upload-limit"]) ?: 0L)).takeIf { it > 0L }
+                    if (txLim != null && txLim > 0L) {
+                        umQuotaLimitByProfile[prof] = (umQuotaLimitByProfile[prof] ?: 0L).coerceAtLeast(txLim)
+                    }
+                    val upLim = parseMikrotikDurationToSeconds(lim["uptime-limit"])
+                    if (upLim != null && upLim > 0L) {
+                        umTimeLimitByProfile[prof] = (umTimeLimitByProfile[prof] ?: 0L).coerceAtLeast(upLim)
+                    }
+                }
+                val v7Sessions = executeCommand(inStream, outStream, listOf("/user-manager/session/print", "?active=true")).results
+                for (s in v7Sessions) {
+                    val u = (s["user"] ?: s["username"] ?: "").trim()
+                    if (u.isNotBlank()) umSessionByUser[u] = s
+                }
+            }
+
             val result = mutableListOf<Map<String, String>>()
+            val capturedUsers = mutableSetOf<String>()
+
             for (act in hotspotAct) {
                 val item = act.toMutableMap()
                 val mac = (item["mac-address"] ?: "").uppercase()
-                val user = item["user"] ?: ""
+                val ip = item["address"] ?: ""
+                val user = (item["user"] ?: "").trim()
+                if (user.isNotBlank()) capturedUsers.add("$user|$mac")
 
-                // Match host-name from DHCP lease
-                val lease = leaseByMac[mac]
-                val hostName = lease?.get("host-name") ?: lease?.get("comment") ?: ""
+                val lease = leaseByMac[mac] ?: leaseByIp[ip]
+                val hostName = lease?.get("host-name")?.ifBlank { null }
+                    ?: lease?.get("comment")?.ifBlank { null }
+                    ?: ""
                 item["host_name"] = hostName
-
-                // Match profile and limits
-                val uObj = userByName[user]
-                if (uObj != null) {
-                    item["profile"] = uObj["profile"] ?: item["profile"] ?: "default"
-                    item["limit_uptime"] = uObj["limit-uptime"] ?: ""
-                    item["limit_bytes_total"] = uObj["limit-bytes-total"] ?: ""
-                }
                 item["device_type"] = detectDeviceType(hostName, mac)
-                item["connection_type"] = "HOTSPOT"
+
+                val hsU = hsUserByName[user]
+                val umU = umUserMap[user]
+                val radiusFlag = act["radius"]?.equals("true", ignoreCase = true) == true ||
+                    act["radius"]?.equals("yes", ignoreCase = true) == true
+                val isUserManager = radiusFlag || (hsU == null && (umU != null || umActiveProfileByUser.containsKey(user) || umSessionByUser.containsKey(user)))
+
+                item["connection_type"] = if (isUserManager) "USER_MANAGER" else "HOTSPOT"
+
+                val actIn = act["bytes-in"]?.toLongOrNull() ?: 0L
+                val actOut = act["bytes-out"]?.toLongOrNull() ?: 0L
+                val actUptimeSec = parseMikrotikDurationToSeconds(act["uptime"]) ?: 0L
+
+                if (isUserManager) {
+                    val umProf = umActiveProfileByUser[user]
+                        ?: umU?.get("actual-profile")
+                        ?: umU?.get("group")
+                        ?: act["profile"]
+                        ?: "باقة يوزرمانجر"
+                    item["profile"] = umProf
+
+                    val umS = umSessionByUser[user]
+                    val priorDown = parseMikrotikBytes(umU?.get("download-used") ?: umU?.get("download") ?: umU?.get("total-download")) ?: 0L
+                    val priorUp = parseMikrotikBytes(umU?.get("upload-used") ?: umU?.get("upload") ?: umU?.get("total-upload")) ?: 0L
+                    val sessDown = parseMikrotikBytes(umS?.get("download")) ?: actIn
+                    val sessUp = parseMikrotikBytes(umS?.get("upload")) ?: actOut
+                    val totalUsedBytes = maxOf(priorDown + priorUp, actIn + actOut, sessDown + sessUp)
+                    item["bytes_consumed_total"] = totalUsedBytes.toString()
+
+                    // Limit from active session (MikroTik RADIUS Attributes) OR User/Profile Limitation
+                    val actLimitBytes = parseMikrotikBytes(act["limit-bytes-total"])
+                        ?: ((parseMikrotikBytes(act["limit-bytes-in"]) ?: 0L) + (parseMikrotikBytes(act["limit-bytes-out"]) ?: 0L)).takeIf { it > 0L }
+                    val umLimitBytes = actLimitBytes
+                        ?: parseMikrotikBytes(umU?.get("transfer-limit"))
+                        ?: umQuotaLimitByProfile[umProf]
+                        ?: parseBytesHintFromProfileName(umProf)
+
+                    if (umLimitBytes != null && umLimitBytes > 0L) {
+                        item["limit_bytes_total"] = umLimitBytes.toString()
+                        val remBytes = (umLimitBytes - totalUsedBytes).coerceAtLeast(0L)
+                        item["remaining_bytes"] = remBytes.toString()
+                    }
+
+                    // Remaining time: prefer MikroTik's live session-time-left, else UM limit/validity
+                    val actTimeLeftSec = parseMikrotikDurationToSeconds(act["session-time-left"])
+                    val umPriorUpSec = parseMikrotikDurationToSeconds(umU?.get("uptime-used") ?: umU?.get("uptime") ?: umU?.get("total-uptime")) ?: 0L
+                    val totalUsedSec = maxOf(umPriorUpSec, actUptimeSec)
+                    val umTimeLimitSec = umTimeLimitByProfile[umProf]
+                        ?: parseMikrotikDurationToSeconds(umValidityByProfile[umProf])
+                        ?: parseDurationHintFromProfileName(umProf)
+
+                    when {
+                        actTimeLeftSec != null && actTimeLeftSec > 0L -> {
+                            item["remaining_seconds"] = actTimeLeftSec.toString()
+                            item["limit_uptime"] = act["session-time-left"] ?: ""
+                        }
+                        umTimeLimitSec != null && umTimeLimitSec > 0L -> {
+                            val remSec = (umTimeLimitSec - totalUsedSec).coerceAtLeast(0L)
+                            item["remaining_seconds"] = remSec.toString()
+                            item["limit_uptime"] = umValidityByProfile[umProf] ?: "${umTimeLimitSec}s"
+                        }
+                    }
+                } else {
+                    val profName = hsU?.get("profile") ?: act["profile"] ?: "default"
+                    item["profile"] = profName
+                    val profObj = hsProfileByName[profName]
+
+                    val hsUserIn = hsU?.get("bytes-in")?.toLongOrNull() ?: 0L
+                    val hsUserOut = hsU?.get("bytes-out")?.toLongOrNull() ?: 0L
+                    // RouterOS /ip/hotspot/user counters hold previous finished sessions while /active holds current session
+                    val totalConsumedBytes = (hsUserIn + hsUserOut) + (actIn + actOut)
+                    item["bytes_consumed_total"] = totalConsumedBytes.toString()
+
+                    val limitBytes = parseMikrotikBytes(hsU?.get("limit-bytes-total"))
+                        ?: parseMikrotikBytes(act["limit-bytes-total"])
+                        ?: ((parseMikrotikBytes(hsU?.get("limit-bytes-in")) ?: 0L) + (parseMikrotikBytes(hsU?.get("limit-bytes-out")) ?: 0L)).takeIf { it > 0L }
+                        ?: parseBytesHintFromProfileName(profName)
+
+                    if (limitBytes != null && limitBytes > 0L) {
+                        item["limit_bytes_total"] = limitBytes.toString()
+                        val remBytes = (limitBytes - totalConsumedBytes).coerceAtLeast(0L)
+                        item["remaining_bytes"] = remBytes.toString()
+                    }
+
+                    val actTimeLeftSec = parseMikrotikDurationToSeconds(act["session-time-left"])
+                    val userLimitUpSec = parseMikrotikDurationToSeconds(hsU?.get("limit-uptime"))
+                    val profSessionTimeoutSec = parseMikrotikDurationToSeconds(profObj?.get("session-timeout"))
+                    val limitSec = userLimitUpSec ?: profSessionTimeoutSec ?: parseDurationHintFromProfileName(profName)
+
+                    if (actTimeLeftSec != null && actTimeLeftSec > 0L) {
+                        item["remaining_seconds"] = actTimeLeftSec.toString()
+                        item["limit_uptime"] = hsU?.get("limit-uptime") ?: profObj?.get("session-timeout") ?: act["session-time-left"] ?: ""
+                    } else if (limitSec != null && limitSec > 0L) {
+                        val prevUptimeSec = parseMikrotikDurationToSeconds(hsU?.get("uptime")) ?: 0L
+                        val consumedSec = prevUptimeSec + actUptimeSec
+                        val remSec = (limitSec - consumedSec).coerceAtLeast(0L)
+                        item["remaining_seconds"] = remSec.toString()
+                        item["limit_uptime"] = hsU?.get("limit-uptime") ?: profObj?.get("session-timeout") ?: ""
+                    }
+                }
+
                 result.add(item)
             }
+
+            // Include active UM sessions not listed in /ip/hotspot/active
+            for ((u, s) in umSessionByUser) {
+                val mac = (s["calling-station-id"] ?: s["mac-address"] ?: "").uppercase()
+                if (capturedUsers.contains("$u|$mac")) continue
+                val ip = s["user-address"] ?: s["framed-ip-address"] ?: ""
+                val lease = leaseByMac[mac] ?: leaseByIp[ip]
+                val hostName = lease?.get("host-name")?.ifBlank { null } ?: ""
+                val umU = umUserMap[u]
+                val umProf = umActiveProfileByUser[u] ?: s["profile"] ?: "يوزرمانجر"
+                val down = parseMikrotikBytes(s["download"]) ?: 0L
+                val up = parseMikrotikBytes(s["upload"]) ?: 0L
+                val limitBytes = parseMikrotikBytes(umU?.get("transfer-limit"))
+                    ?: umQuotaLimitByProfile[umProf]
+                    ?: parseBytesHintFromProfileName(umProf)
+                val upSec = parseMikrotikDurationToSeconds(s["uptime"]) ?: 0L
+                val timeLimitSec = umTimeLimitByProfile[umProf]
+                    ?: parseMikrotikDurationToSeconds(umValidityByProfile[umProf])
+                    ?: parseDurationHintFromProfileName(umProf)
+
+                val item = mutableMapOf(
+                    ".id" to (s[".id"] ?: ""),
+                    "user" to u,
+                    "address" to ip,
+                    "mac-address" to mac,
+                    "uptime" to (s["uptime"] ?: "0s"),
+                    "bytes-in" to down.toString(),
+                    "bytes-out" to up.toString(),
+                    "bytes_consumed_total" to (down + up).toString(),
+                    "host_name" to hostName,
+                    "device_type" to detectDeviceType(hostName, mac),
+                    "connection_type" to "USER_MANAGER",
+                    "profile" to umProf
+                )
+                if (limitBytes != null && limitBytes > 0L) {
+                    item["limit_bytes_total"] = limitBytes.toString()
+                    item["remaining_bytes"] = (limitBytes - (down + up)).coerceAtLeast(0L).toString()
+                }
+                if (timeLimitSec != null && timeLimitSec > 0L) {
+                    item["remaining_seconds"] = (timeLimitSec - upSec).coerceAtLeast(0L).toString()
+                    item["limit_uptime"] = umValidityByProfile[umProf] ?: "${timeLimitSec}s"
+                }
+                result.add(item)
+            }
+
             result
         } catch (e: Exception) {
             Log.e(tag, "Failed to get detailed connected devices", e)
             emptyList()
         } finally {
             try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun parseMikrotikBytes(raw: String?): Long? {
+        val clean = raw?.trim()?.lowercase() ?: return null
+        if (clean.isBlank() || clean == "0" || clean == "unlimited") return null
+        clean.toLongOrNull()?.let { return if (it > 0L) it else null }
+        val match = Regex("""^(\d+(?:\.\d+)?)\s*(g|gb|gib|m|mb|mib|k|kb|kib|b)$""").find(clean) ?: return null
+        val num = match.groupValues[1].toDoubleOrNull() ?: return null
+        val unit = match.groupValues[2]
+        val mult = when {
+            unit.startsWith("g") -> 1024.0 * 1024.0 * 1024.0
+            unit.startsWith("m") -> 1024.0 * 1024.0
+            unit.startsWith("k") -> 1024.0
+            else -> 1.0
+        }
+        return (num * mult).toLong().takeIf { it > 0L }
+    }
+
+    private fun parseMikrotikDurationToSeconds(raw: String?): Long? {
+        val clean = raw?.trim()?.lowercase() ?: return null
+        if (clean.isBlank() || clean == "0s" || clean == "00:00:00" || clean == "unlimited" || clean == "none") return null
+        var total = 0L
+        var matched = false
+        Regex("""(\d+)\s*w""").find(clean)?.let {
+            total += (it.groupValues[1].toLongOrNull() ?: 0L) * 7 * 86400
+            matched = true
+        }
+        Regex("""(\d+)\s*d""").find(clean)?.let {
+            total += (it.groupValues[1].toLongOrNull() ?: 0L) * 86400
+            matched = true
+        }
+        Regex("""(\d+)\s*h""").find(clean)?.let {
+            total += (it.groupValues[1].toLongOrNull() ?: 0L) * 3600
+            matched = true
+        }
+        Regex("""(\d+)\s*m(?!s)""").find(clean)?.let {
+            total += (it.groupValues[1].toLongOrNull() ?: 0L) * 60
+            matched = true
+        }
+        Regex("""(\d+)\s*s""").find(clean)?.let {
+            total += it.groupValues[1].toLongOrNull() ?: 0L
+            matched = true
+        }
+        Regex("""(\d{1,2}):(\d{2}):(\d{2})""").find(clean)?.let {
+            val h = it.groupValues[1].toLongOrNull() ?: 0L
+            val m = it.groupValues[2].toLongOrNull() ?: 0L
+            val s = it.groupValues[3].toLongOrNull() ?: 0L
+            total += h * 3600 + m * 60 + s
+            matched = true
+        }
+        return if (matched && total > 0L) total else null
+    }
+
+    private fun parseBytesHintFromProfileName(profileName: String): Long? {
+        val match = Regex("""(\d+(?:\.\d+)?)\s*(GB|G|MB|M|جيجا|ميجا)""", RegexOption.IGNORE_CASE).find(profileName) ?: return null
+        val num = match.groupValues[1].toDoubleOrNull() ?: return null
+        val unit = match.groupValues[2].lowercase()
+        return if (unit.startsWith("g") || unit == "جيجا") {
+            (num * 1024 * 1024 * 1024).toLong()
+        } else {
+            (num * 1024 * 1024).toLong()
+        }
+    }
+
+    private fun parseDurationHintFromProfileName(profileName: String): Long? {
+        val match = Regex("""(\d+)\s*(يوم|أيام|ايام|ساعة|ساعات|ساعه|d|h)""", RegexOption.IGNORE_CASE).find(profileName) ?: return null
+        val num = match.groupValues[1].toLongOrNull() ?: return null
+        val unit = match.groupValues[2].lowercase()
+        return when {
+            unit == "d" || unit.contains("يوم") -> num * 86400L
+            else -> num * 3600L
         }
     }
 
@@ -1256,15 +1787,31 @@ class MikroTikApiClient(
         return tempC to voltage
     }
 
-    suspend fun fetchActiveCardSessions(): List<ActiveCardLoginInfo> = withContext(Dispatchers.IO) {
+    suspend fun fetchActiveCardSessions(): List<ActiveCardLoginInfo> =
+        fetchActiveCardSessionsSafe().sessions
+
+    suspend fun fetchActiveCardSessionsSafe(): ActiveCardSessionPollResult = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         try {
             socket = createSocket().apply { soTimeout = 8000 }
             val inStream = DataInputStream(socket.getInputStream())
             val outStream = DataOutputStream(socket.getOutputStream())
-            if (!performLogin(inStream, outStream).isSuccess) return@withContext emptyList()
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) {
+                return@withContext ActiveCardSessionPollResult(
+                    isSuccess = false,
+                    errorMessage = login.errorMessage
+                )
+            }
 
-            val hsActive = executeCommand(inStream, outStream, listOf("/ip/hotspot/active/print")).results
+            val hsActiveRes = executeCommand(inStream, outStream, listOf("/ip/hotspot/active/print"))
+            if (!hsActiveRes.isSuccess) {
+                return@withContext ActiveCardSessionPollResult(
+                    isSuccess = false,
+                    errorMessage = hsActiveRes.errorMessage
+                )
+            }
+            val hsActive = hsActiveRes.results
             val hsUsers = executeCommand(inStream, outStream, listOf("/ip/hotspot/user/print")).results
             val dhcpLeases = executeCommand(inStream, outStream, listOf("/ip/dhcp-server/lease/print")).results
 
@@ -1315,8 +1862,8 @@ class MikroTikApiClient(
             for (act in hsActive) {
                 val card = act["user"]?.trim() ?: ""
                 if (card.isBlank()) continue
-                val mac = (act["mac-address"] ?: "").uppercase()
-                val ip = act["address"] ?: ""
+                val mac = (act["mac-address"] ?: "").trim().uppercase()
+                val ip = (act["address"] ?: "").trim()
                 val uptime = act["uptime"] ?: "0s"
                 val radiusFlag = act["radius"]?.equals("true", ignoreCase = true) == true ||
                     act["radius"]?.equals("yes", ignoreCase = true) == true
@@ -1335,8 +1882,9 @@ class MikroTikApiClient(
                     ?: lease?.get("comment")?.ifBlank { null }
                     ?: ""
                 val deviceType = detectDeviceType(hostName, mac)
-                val key = "$systemType|$card|${mac.ifBlank { ip }}"
-                seenUsers.add("$card|$mac")
+                val normalizedId = mac.ifBlank { ip }.uppercase()
+                val key = "$systemType|${card.lowercase()}|$normalizedId"
+                seenUsers.add("${card.lowercase()}|$mac")
 
                 sessions.add(
                     ActiveCardLoginInfo(
@@ -1363,9 +1911,9 @@ class MikroTikApiClient(
             for (row in (umV7Active + umV6Active)) {
                 val card = row["user"]?.trim() ?: row["username"]?.trim() ?: ""
                 if (card.isBlank()) continue
-                val mac = (row["calling-station-id"] ?: row["mac-address"] ?: "").uppercase()
-                val ip = row["user-address"] ?: row["framed-ip-address"] ?: ""
-                if (seenUsers.contains("$card|$mac")) continue
+                val mac = (row["calling-station-id"] ?: row["mac-address"] ?: "").trim().uppercase()
+                val ip = (row["user-address"] ?: row["framed-ip-address"] ?: "").trim()
+                if (seenUsers.contains("${card.lowercase()}|$mac")) continue
 
                 val profileName = umProfileByUser[card] ?: row["profile"] ?: "باقة يوزرمانجر"
                 val lease = leaseByMac[mac] ?: leaseByIp[ip]
@@ -1373,7 +1921,8 @@ class MikroTikApiClient(
                     ?: lease?.get("comment")?.ifBlank { null }
                     ?: ""
                 val deviceType = detectDeviceType(hostName, mac)
-                val key = "USER_MANAGER|$card|${mac.ifBlank { ip }}"
+                val normalizedId = mac.ifBlank { ip }.uppercase()
+                val key = "USER_MANAGER|${card.lowercase()}|$normalizedId"
 
                 sessions.add(
                     ActiveCardLoginInfo(
@@ -1391,10 +1940,10 @@ class MikroTikApiClient(
                 )
             }
 
-            sessions
+            ActiveCardSessionPollResult(isSuccess = true, sessions = sessions)
         } catch (e: Exception) {
             Log.e(tag, "Failed to fetch active card sessions", e)
-            emptyList()
+            ActiveCardSessionPollResult(isSuccess = false, errorMessage = e.localizedMessage)
         } finally {
             try { socket?.close() } catch (_: Exception) {}
         }
@@ -1415,6 +1964,24 @@ class MikroTikApiClient(
             MikroTikResponse(isSuccess = true)
         } catch (e: Exception) {
             MikroTikResponse(isSuccess = true) // Socket drop is normal on immediate reboot
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun shutdownRouter(): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            executeCommand(inStream, outStream, listOf("/system/shutdown"))
+            MikroTikResponse(isSuccess = true)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = true) // Socket drop is expected when RouterOS powers off
         } finally {
             try { socket?.close() } catch (_: Exception) {}
         }
@@ -1688,61 +2255,63 @@ class MikroTikApiClient(
             val random = java.util.Random()
             val comment = "TalalPro_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.ENGLISH).format(Date())}"
             val uptimeLimit = if (validityDays != null && validityDays > 0) "${validityDays}d" else ""
+            val isUm = !system.equals("HOTSPOT", ignoreCase = true)
+            val useV7Um = if (isUm) !executeCommand(inStream, outStream, listOf("/tool/user-manager/profile/print")).isSuccess else false
+            val v6Cust = if (isUm && !useV7Um) {
+                executeCommand(inStream, outStream, listOf("/tool/user-manager/customer/print")).results.firstOrNull()?.get("login") ?: username.ifBlank { "admin" }
+            } else "admin"
 
             for (i in 1..safeCount) {
-                // Generate random numeric code for card
                 val code = if (prefix.isNotBlank()) {
                     "$prefix${100000 + random.nextInt(900000)}"
                 } else {
                     "${10000000 + random.nextInt(90000000)}"
                 }
-                val password = code // single PIN by default or random
+                val password = code
 
-                if (system.equals("HOTSPOT", ignoreCase = true)) {
+                if (!isUm) {
                     val words = mutableListOf(
                         "/ip/hotspot/user/add",
                         "=name=$code",
                         "=password=$password",
-                        "=profile=$profile",
+                        "=profile=${profile.ifBlank { "default" }}",
                         "=comment=$comment"
                     )
-                    if (uptimeLimit.isNotBlank()) {
-                        words.add("=limit-uptime=$uptimeLimit")
-                    }
+                    if (uptimeLimit.isNotBlank()) words.add("=limit-uptime=$uptimeLimit")
                     val res = executeCommand(inStream, outStream, words)
-                    if (res.isSuccess) {
-                        created.add(Pair(code, password))
-                    }
-                } else {
-                    // USER MANAGER
+                    if (res.isSuccess) created.add(Pair(code, password))
+                } else if (!useV7Um) {
                     val wordsV6 = mutableListOf(
                         "/tool/user-manager/user/add",
-                        "=customer=admin",
+                        "=customer=$v6Cust",
                         "=username=$code",
                         "=password=$password",
                         "=comment=$comment"
                     )
-                    if (profile.isNotBlank() && profile != "default") {
-                        wordsV6.add("=actual-profile=$profile")
-                    }
                     val resV6 = executeCommand(inStream, outStream, wordsV6)
                     if (resV6.isSuccess) {
-                        created.add(Pair(code, password))
-                    } else {
-                        // v7 syntax
-                        val wordsV7 = mutableListOf(
-                            "/user-manager/user/add",
-                            "=name=$code",
-                            "=password=$password",
-                            "=comment=$comment"
-                        )
                         if (profile.isNotBlank() && profile != "default") {
-                            wordsV7.add("=group=$profile")
+                            executeCommand(
+                                inStream,
+                                outStream,
+                                listOf("/tool/user-manager/user/create-and-activate-profile", "=numbers=$code", "=profile=$profile", "=customer=$v6Cust")
+                            )
                         }
-                        val resV7 = executeCommand(inStream, outStream, wordsV7)
-                        if (resV7.isSuccess) {
-                            created.add(Pair(code, password))
+                        created.add(Pair(code, password))
+                    }
+                } else {
+                    val wordsV7 = mutableListOf(
+                        "/user-manager/user/add",
+                        "=name=$code",
+                        "=password=$password",
+                        "=comment=$comment"
+                    )
+                    val resV7 = executeCommand(inStream, outStream, wordsV7)
+                    if (resV7.isSuccess) {
+                        if (profile.isNotBlank() && profile != "default") {
+                            executeCommand(inStream, outStream, listOf("/user-manager/user-profile/add", "=user=$code", "=profile=$profile"))
                         }
+                        created.add(Pair(code, password))
                     }
                 }
             }
@@ -2348,6 +2917,176 @@ class MikroTikApiClient(
                 errorMessage = e.localizedMessage ?: "خطأ أثناء تنفيذ الأمر",
                 pingTimeMs = System.currentTimeMillis() - startTime
             )
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Parses and executes ANY arbitrary RouterOS command string (either API format like
+     * `/ip/hotspot/active/print =user=123` or standard RouterOS CLI style like
+     * `/ip hotspot active print` or `/interface disable numbers=ether2` or `/system reboot`).
+     */
+    suspend fun executeArbitraryCommandLine(rawCommand: String): MikroTikResponse = withContext(Dispatchers.IO) {
+        val tokens = tokenizeCommandLine(rawCommand.trim())
+        if (tokens.isEmpty()) {
+            return@withContext MikroTikResponse(isSuccess = false, errorMessage = "الأمر فارغ")
+        }
+
+        val apiWords = mutableListOf<String>()
+        val pathSegments = mutableListOf<String>()
+        var readingPath = tokens.first().startsWith("/")
+
+        for ((idx, tok) in tokens.withIndex()) {
+            if (tok.startsWith("/") && idx == 0) {
+                pathSegments.addAll(tok.trimStart('/').split('/').filter { it.isNotBlank() })
+            } else if (readingPath && !tok.contains("=") && !tok.startsWith("?")) {
+                pathSegments.add(tok)
+                if (tok in setOf("print", "add", "set", "remove", "enable", "disable", "monitor", "reset-counters", "reboot", "shutdown", "ping", "fetch", "torch", "force-update", "save", "export")) {
+                    readingPath = false
+                }
+            } else {
+                readingPath = false
+                if (tok.startsWith("=") || tok.startsWith("?")) {
+                    apiWords.add(tok)
+                } else if (tok.contains("=")) {
+                    val key = tok.substringBefore("=")
+                    val value = tok.substringAfter("=").trim('"')
+                    if (key == "numbers") {
+                        apiWords.add("=.id=$value")
+                    } else {
+                        apiWords.add("=$key=$value")
+                    }
+                } else {
+                    apiWords.add("=$tok=")
+                }
+            }
+        }
+
+        val commandPath = "/" + pathSegments.joinToString("/")
+        val finalWords = listOf(commandPath) + apiWords
+        runRouterCommand(finalWords)
+    }
+
+    private fun tokenizeCommandLine(input: String): List<String> {
+        val tokens = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        for (ch in input) {
+            when {
+                ch == '"' -> {
+                    inQuotes = !inQuotes
+                }
+                ch.isWhitespace() && !inQuotes -> {
+                    if (current.isNotEmpty()) {
+                        tokens.add(current.toString())
+                        current.clear()
+                    }
+                }
+                else -> current.append(ch)
+            }
+        }
+        if (current.isNotEmpty()) tokens.add(current.toString())
+        return tokens
+    }
+
+    // ================= SPECIAL TOOLS LIVE OPERATIONS =================
+
+    suspend fun toggleBluetoothSharingBlock(enableBlock: Boolean): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val ruleComment = "TALAL_PRO_BLOCK_SHARING_TTL1"
+            val existing = executeCommand(inStream, outStream, listOf("/ip/firewall/mangle/print", "?comment=$ruleComment"))
+            if (enableBlock) {
+                if (existing.results.isNotEmpty()) {
+                    val id = existing.results.first()[".id"] ?: ""
+                    executeCommand(inStream, outStream, listOf("/ip/firewall/mangle/set", "=.id=$id", "=disabled=no", "=new-ttl=set:1"))
+                } else {
+                    executeCommand(
+                        inStream,
+                        outStream,
+                        listOf(
+                            "/ip/firewall/mangle/add",
+                            "=chain=postrouting",
+                            "=action=change-ttl",
+                            "=new-ttl=set:1",
+                            "=passthrough=yes",
+                            "=comment=$ruleComment"
+                        )
+                    )
+                }
+            } else {
+                existing.results.forEach { row ->
+                    row[".id"]?.let { id ->
+                        executeCommand(inStream, outStream, listOf("/ip/firewall/mangle/remove", "=.id=$id"))
+                    }
+                }
+                MikroTikResponse(isSuccess = true)
+            }
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun toggleFreeNetworkMode(enableFree: Boolean): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val servers = executeCommand(inStream, outStream, listOf("/ip/hotspot/print")).results
+            if (servers.isEmpty()) {
+                return@withContext MikroTikResponse(isSuccess = false, errorMessage = "لا يوجد سيرفر Hotspot مُعد على الراوتر")
+            }
+            val disVal = if (enableFree) "yes" else "no"
+            for (srv in servers) {
+                val id = srv[".id"] ?: continue
+                executeCommand(inStream, outStream, listOf("/ip/hotspot/set", "=.id=$id", "=disabled=$disVal"))
+            }
+            MikroTikResponse(isSuccess = true, results = servers)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun setHotspotHtmlDirectory(htmlDir: String): MikroTikResponse = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = createSocket()
+            val inStream = DataInputStream(socket.getInputStream())
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val login = performLogin(inStream, outStream)
+            if (!login.isSuccess) return@withContext login
+
+            val profiles = executeCommand(inStream, outStream, listOf("/ip/hotspot/profile/print")).results
+            if (profiles.isEmpty()) {
+                return@withContext MikroTikResponse(isSuccess = false, errorMessage = "لا توجد بروفايلات Hotspot")
+            }
+            var updated = 0
+            for (prof in profiles) {
+                val name = prof["name"] ?: ""
+                val id = prof[".id"] ?: continue
+                if (name != "default" || profiles.size == 1) {
+                    val res = executeCommand(inStream, outStream, listOf("/ip/hotspot/profile/set", "=.id=$id", "=html-directory=${htmlDir.trim()}"))
+                    if (res.isSuccess) updated++
+                }
+            }
+            MikroTikResponse(isSuccess = updated > 0, errorMessage = if (updated == 0) "تعذر تعديل مجلد HTML" else null)
+        } catch (e: Exception) {
+            MikroTikResponse(isSuccess = false, errorMessage = e.localizedMessage)
         } finally {
             try { socket?.close() } catch (_: Exception) {}
         }

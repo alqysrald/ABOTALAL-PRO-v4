@@ -61,6 +61,7 @@ fun AddCardsScreen(
     val isSyncingAll by viewModel.isSyncingAllPackages.collectAsState()
     val isProcessingBatch by viewModel.isProcessingBatch.collectAsState()
     val selectedBatchItems by viewModel.selectedBatchItems.collectAsState()
+    val pendingBatchChoice by viewModel.pendingBatchForPushChoice.collectAsState()
 
     val activeRouter = selectedAddCardsRouter ?: routers.firstOrNull()
 
@@ -1217,8 +1218,11 @@ fun AddCardsScreen(
                                     onToggleBatch = {
                                         viewModel.toggleCardBatch(activeRouter, batch, batch.isDisabled)
                                     },
-                                    onSyncDraft = {
-                                        viewModel.syncDraftBatchToRouter(activeRouter, batch)
+                                    onSyncHotspot = {
+                                        viewModel.pushBatchToTargetServer(activeRouter, batch, "HOTSPOT")
+                                    },
+                                    onSyncUserManager = {
+                                        viewModel.pushBatchToTargetServer(activeRouter, batch, "USER_MANAGER")
                                     },
                                     onDeleteBatch = { deletingBatch = batch }
                                 )
@@ -1309,6 +1313,28 @@ fun AddCardsScreen(
             onDelete = { alsoRouter ->
                 viewModel.deleteCardBatch(activeRouter, batch, alsoRouter)
                 deletingBatch = null
+            }
+        )
+    }
+
+    pendingBatchChoice?.let { (batch, printItems) ->
+        BatchPostGenerationDialog(
+            batch = batch,
+            activeRouter = activeRouter,
+            packages = allPackages,
+            isProcessing = isProcessingBatch,
+            onPushToHotspot = { chosenProf ->
+                viewModel.pushBatchToTargetServer(activeRouter, batch, "HOTSPOT", chosenProf)
+            },
+            onPushToUserManager = { chosenProf ->
+                viewModel.pushBatchToTargetServer(activeRouter, batch, "USER_MANAGER", chosenProf)
+            },
+            onPrintPdf = {
+                val tmpl = resolveTemplateForBatch(batch)
+                exportAndOpenPdf(tmpl, printItems)
+            },
+            onDismissKeepLocal = {
+                viewModel.dismissBatchPushChoice()
             }
         )
     }
@@ -1421,7 +1447,8 @@ private fun BatchHistoryRow(
     onPreviewBatch: () -> Unit,
     onEditBatch: () -> Unit,
     onToggleBatch: () -> Unit,
-    onSyncDraft: () -> Unit,
+    onSyncHotspot: () -> Unit,
+    onSyncUserManager: () -> Unit,
     onDeleteBatch: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -1559,13 +1586,16 @@ private fun BatchHistoryRow(
                         text = { Text("تعديل الدفعة والباقة والقالب") },
                         onClick = { menuExpanded = false; onEditBatch() }
                     )
-                    if (!batch.isSyncedToRouter) {
-                        DropdownMenuItem(
-                            leadingIcon = { Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFFD97706)) },
-                            text = { Text("رفع الدفعة للراوتر الآن") },
-                            onClick = { menuExpanded = false; onSyncDraft() }
-                        )
-                    }
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.WifiTethering, contentDescription = null, tint = Color(0xFFD97706)) },
+                        text = { Text(if (batch.isSyncedToRouter) "إعادة الإضافة إلى سيرفر الهوتسبوت" else "إضافة إلى سيرفر الهوتسبوت (Hotspot)") },
+                        onClick = { menuExpanded = false; onSyncHotspot() }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null, tint = Color(0xFF0284C7)) },
+                        text = { Text(if (batch.isSyncedToRouter) "إعادة الإضافة إلى سيرفر اليوزرمانجر" else "إضافة إلى سيرفر اليوزرمانجر (User Manager)") },
+                        onClick = { menuExpanded = false; onSyncUserManager() }
+                    )
                     DropdownMenuItem(
                         leadingIcon = {
                             Icon(

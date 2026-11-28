@@ -887,3 +887,190 @@ fun DeleteBatchConfirmDialog(
         }
     }
 }
+
+@Composable
+fun BatchPostGenerationDialog(
+    batch: CardBatchEntity,
+    activeRouter: RouterEntity?,
+    packages: List<UnifiedPackageOption>,
+    isProcessing: Boolean,
+    onPushToHotspot: (profileName: String) -> Unit,
+    onPushToUserManager: (profileName: String) -> Unit,
+    onPrintPdf: () -> Unit,
+    onDismissKeepLocal: () -> Unit
+) {
+    var selectedTargetProfile by remember(batch.profileName) { mutableStateOf(batch.profileName.ifBlank { "default" }) }
+    var profileMenuExpanded by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismissKeepLocal) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = Color(0xFF0F172A),
+            border = BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.CloudUpload,
+                                contentDescription = null,
+                                tint = Color(0xFF34D399),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "تم توليد الدفعة [${batch.batchCode}] بنجاح ✓",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "العدد: ${batch.cardsCount} كرت • الفئة: ${batch.priceLabel}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                }
+
+                Text(
+                    text = if (activeRouter != null) {
+                        "اختر السيرفر المطلوب لإضافة الكروت فوراً إلى راوتر [${activeRouter.name}]:"
+                    } else {
+                        "لا يوجد راوتر متصل حالياً. يمكنك اختيار راوتر ورفعها الآن أو الاحتفاظ بها محلياً وطباعتها."
+                    },
+                    fontSize = 12.sp,
+                    color = Color(0xFFCBD5E1)
+                )
+
+                // Optional Target Profile override
+                if (packages.isNotEmpty()) {
+                    Box {
+                        OutlinedCard(
+                            onClick = { profileMenuExpanded = true },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF334155)),
+                            colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFF1E293B)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "الباقة المختارة للرفع: $selectedTargetProfile",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF38BDF8),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = profileMenuExpanded,
+                            onDismissRequest = { profileMenuExpanded = false },
+                            modifier = Modifier.background(Color(0xFF1E293B))
+                        ) {
+                            packages.forEach { pkg ->
+                                DropdownMenuItem(
+                                    text = { Text(pkg.displayLabel, fontSize = 12.sp, color = Color.White) },
+                                    onClick = {
+                                        selectedTargetProfile = pkg.name
+                                        profileMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 1. Add to Hotspot Server
+                Button(
+                    onClick = { onPushToHotspot(selectedTargetProfile) },
+                    enabled = !isProcessing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 50.dp)
+                        .testTag("push_batch_hotspot_btn")
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    } else {
+                        Icon(Icons.Default.WifiTethering, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text("إضافة الدفعة إلى سيرفر الهوتسبوت (Hotspot)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                }
+
+                // 2. Add to User Manager Server
+                Button(
+                    onClick = { onPushToUserManager(selectedTargetProfile) },
+                    enabled = !isProcessing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 50.dp)
+                        .testTag("push_batch_um_btn")
+                ) {
+                    Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("إضافة الدفعة إلى سيرفر اليوزرمانجر (User Manager)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                }
+
+                // 3. Print PDF Now
+                OutlinedButton(
+                    onClick = onPrintPdf,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFF10B981)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF34D399)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("push_dialog_print_pdf_btn")
+                ) {
+                    Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("طباعة الكروت PDF الآن", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+
+                // 4. Keep locally for later
+                TextButton(
+                    onClick = onDismissKeepLocal,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("push_dialog_keep_local_btn")
+                ) {
+                    Text("الاحتفاظ بالدفعة محلياً والرفع لاحقاً", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+

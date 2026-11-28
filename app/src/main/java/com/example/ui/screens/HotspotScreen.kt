@@ -261,7 +261,25 @@ fun HotspotScreen(
                     )
                 }
                 HotspotTab.PROFILES -> {
-                    HotspotProfilesContent(profiles = profiles)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF0B132B))
+                            .padding(14.dp)
+                    ) {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            item {
+                                PackageManagementContent(
+                                    viewModel = viewModel,
+                                    router = selectedRouter,
+                                    initialMode = "HOTSPOT"
+                                )
+                            }
+                        }
+                    }
                 }
                 HotspotTab.GENERATOR -> {
                     selectedRouter?.let { r ->

@@ -1,10 +1,10 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -18,12 +18,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.RouterEntity
 import com.example.ui.TalalProViewModel
-import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,6 +39,22 @@ fun SmartAssistantScreen(
     var inputQuery by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
+    val quickCommands = remember {
+        listOf(
+            "فحص المتصلين الآن",
+            "فحص الأجهزة والمنافذ",
+            "تحليل الراوتر",
+            "منع مشاركة البلوتوث TTL=1",
+            "تفعيل الكلاود",
+            "تنظيف كاش DNS",
+            "نسخة احتياطية",
+            "/system resource print",
+            "/ip hotspot active print",
+            "إعادة تشغيل الراوتر",
+            "إيقاف تشغيل الراوتر"
+        )
+    }
+
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
@@ -51,16 +66,16 @@ fun SmartAssistantScreen(
             .fillMaxSize()
             .background(Color(0xFF0B132B))
             .padding(horizontal = 14.dp)
-            .padding(bottom = 12.dp)
+            .padding(bottom = 10.dp)
     ) {
-        // 1. Header Card (Matches Screenshot 14)
+        // 1. Luxury Assistant Header
         Card(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF1E293B))),
+            border = BorderStroke(1.dp, Color(0xFF1E293B)),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp)
+                .padding(vertical = 10.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -73,58 +88,82 @@ fun SmartAssistantScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "المساعد الشبكي الشامل",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                border = BorderStroke(0.8.dp, Color(0xFF10B981).copy(alpha = 0.6f))
+                            ) {
+                                Text(
+                                    text = "كامل الصلاحيات ⚡",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF34D399),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         Text(
-                            text = "المساعد الشبكي الذكي",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "إدارة وتحليل وتنفيذ الأوامر المباشرة على شبكات MikroTik",
+                            text = "ينفذ جميع أوامر MikroTik CLI (ابدأ بـ /) والتحكم الكامل بالتطبيق والراوتر",
                             fontSize = 11.sp,
                             color = Color(0xFF94A3B8)
-                        )
-                        Text(
-                            text = "778215553 | 700897775",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF38BDF8),
-                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
 
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF1E3A8A))
                     ) {
                         Icon(Icons.Default.SmartToy, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(24.dp))
                     }
                 }
 
-                // Analyze Router Button
-                Button(
-                    onClick = {
-                        val r = selectedRouter ?: routers.firstOrNull()
-                        if (r != null) {
-                            viewModel.sendAssistantMessage("تحليل الراوتر ${r.name}")
-                        } else {
-                            viewModel.sendAssistantMessage("تحليل عام للشبكة")
-                        }
-                    },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                    modifier = Modifier.fillMaxWidth()
+                // Quick Direct Action Buttons: فحص المتصلين الآن + فحص الأجهزة والمنافذ
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Button(
+                        onClick = { viewModel.sendAssistantMessage("فحص المتصلين الآن") },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("assistant_check_active_btn")
                     ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Text("تحليل الراوتر المباشر", fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Wifi, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("فحص المتصلين الآن", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+
+                    Button(
+                        onClick = { viewModel.sendAssistantMessage("فحص الأجهزة والمنافذ") },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("assistant_check_ports_btn")
+                    ) {
+                        Icon(Icons.Default.SettingsEthernet, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("الأجهزة والمنافذ", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
 
@@ -134,12 +173,12 @@ fun SmartAssistantScreen(
                     onExpandedChange = { routerDropdownExpanded = !routerDropdownExpanded }
                 ) {
                     OutlinedTextField(
-                        value = selectedRouter?.name ?: "اختر الراوتر للتحليل",
+                        value = selectedRouter?.let { "${it.name} (${it.host})" } ?: "— استهداف الراوتر النشط تلقائياً —",
                         onValueChange = {},
                         readOnly = true,
                         leadingIcon = { Icon(Icons.Default.Hub, contentDescription = null, tint = Color(0xFF38BDF8)) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = routerDropdownExpanded) },
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
@@ -158,7 +197,7 @@ fun SmartAssistantScreen(
                         modifier = Modifier.background(Color(0xFF1E293B))
                     ) {
                         DropdownMenuItem(
-                            text = { Text("— تحليل عام لكل الشبكة —", color = Color.White) },
+                            text = { Text("— اختيار تلقائي للراوتر المتصل —", color = Color.White) },
                             onClick = {
                                 viewModel.selectedAssistantRouter.value = null
                                 routerDropdownExpanded = false
@@ -166,7 +205,7 @@ fun SmartAssistantScreen(
                         )
                         routers.forEach { r ->
                             DropdownMenuItem(
-                                text = { Text(r.name, color = Color.White) },
+                                text = { Text("${r.name} (${r.host})", color = Color.White) },
                                 onClick = {
                                     viewModel.selectedAssistantRouter.value = r
                                     routerDropdownExpanded = false
@@ -178,6 +217,38 @@ fun SmartAssistantScreen(
             }
         }
 
+        // Scrollable Quick Command Chips
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(quickCommands) { cmd ->
+                SuggestionChip(
+                    onClick = {
+                        if (cmd.startsWith("/")) {
+                            inputQuery = cmd
+                        } else {
+                            viewModel.sendAssistantMessage(cmd)
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = cmd,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (cmd.startsWith("/")) Color(0xFF38BDF8) else Color.White
+                        )
+                    },
+                    colors = SuggestionChipDefaults.suggestionChipColors(
+                        containerColor = Color(0xFF1E293B)
+                    ),
+                    border = BorderStroke(1.dp, Color(0xFF334155))
+                )
+            }
+        }
+
         // 2. Chat Conversation Feed
         LazyColumn(
             state = listState,
@@ -185,9 +256,9 @@ fun SmartAssistantScreen(
                 .weight(1f)
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = PaddingValues(vertical = 6.dp)
         ) {
-            items(messages) { msg ->
+            items(messages, key = { it.id }) { msg ->
                 val isUser = msg.sender == "user"
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -195,24 +266,45 @@ fun SmartAssistantScreen(
                 ) {
                     Card(
                         shape = RoundedCornerShape(
-                            topStart = 14.dp,
-                            topEnd = 14.dp,
-                            bottomStart = if (isUser) 14.dp else 2.dp,
-                            bottomEnd = if (isUser) 2.dp else 14.dp
+                            topStart = 16.dp,
+                            topEnd = 16.dp,
+                            bottomStart = if (isUser) 16.dp else 4.dp,
+                            bottomEnd = if (isUser) 4.dp else 16.dp
                         ),
                         colors = CardDefaults.cardColors(
                             containerColor = if (isUser) Color(0xFF1D4ED8) else Color(0xFF0F172A)
                         ),
-                        border = if (isUser) null else CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF1E293B))),
-                        modifier = Modifier.widthIn(max = 320.dp)
+                        border = if (isUser) null else BorderStroke(1.dp, Color(0xFF1E293B)),
+                        modifier = Modifier.widthIn(max = 340.dp)
                     ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
                                 text = msg.content,
                                 fontSize = 13.sp,
                                 color = Color.White,
                                 lineHeight = 19.sp
                             )
+
+                            if (!msg.commandOutput.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFF020617),
+                                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = msg.commandOutput,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Color(0xFF34D399),
+                                        lineHeight = 16.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -227,7 +319,7 @@ fun SmartAssistantScreen(
                         Card(
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                            modifier = Modifier.padding(4.dp)
+                            border = BorderStroke(1.dp, Color(0xFF1E293B))
                         ) {
                             Row(
                                 modifier = Modifier.padding(10.dp),
@@ -235,7 +327,7 @@ fun SmartAssistantScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF38BDF8), strokeWidth = 2.dp)
-                                Text("جاري تحليل بيانات الراوتر...", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("جاري تنفيذ الأمر على الراوتر...", fontSize = 11.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -243,9 +335,11 @@ fun SmartAssistantScreen(
             }
         }
 
-        // 3. Message Input Field (Matches Screenshot 14)
+        // 3. Message & Arbitrary CLI Input Row
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -258,18 +352,25 @@ fun SmartAssistantScreen(
                     }
                 },
                 modifier = Modifier
-                    .size(46.dp)
+                    .minimumInteractiveComponentSize()
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(Color(0xFF059669))
                     .testTag("send_assistant_query_button")
             ) {
-                Icon(Icons.Default.Send, contentDescription = "إرسال", tint = Color.White, modifier = Modifier.size(20.dp))
+                Icon(Icons.Default.Send, contentDescription = "إرسال وتنفيذ الأمر", tint = Color.White, modifier = Modifier.size(20.dp))
             }
 
             OutlinedTextField(
                 value = inputQuery,
                 onValueChange = { inputQuery = it },
-                placeholder = { Text("اكتب سؤالك العام هنا...", color = Color(0xFF64748B), fontSize = 12.sp) },
+                placeholder = {
+                    Text(
+                        "اكتب أي أمر مثل: /ip address print أو فحص المتصلين...",
+                        color = Color(0xFF64748B),
+                        fontSize = 11.sp
+                    )
+                },
                 singleLine = true,
                 shape = RoundedCornerShape(24.dp),
                 colors = OutlinedTextFieldDefaults.colors(

@@ -93,6 +93,11 @@ class TalalProViewModel(
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
+    private val _isGuestModeActive = MutableStateFlow(false)
+    val isGuestModeActive: StateFlow<Boolean> = _isGuestModeActive.asStateFlow()
+
+    private var explicitSignOutRequested = false
+
     private val _currentUser = MutableStateFlow<FirebaseUserAccount?>(null)
     val currentUser: StateFlow<FirebaseUserAccount?> = _currentUser.asStateFlow()
 
@@ -329,6 +334,7 @@ class TalalProViewModel(
     val isSyncingAllPackages = MutableStateFlow(false)
     val isProcessingBatch = MutableStateFlow(false)
     val selectedBatchIdForView = MutableStateFlow<Long?>(null)
+    val pendingBatchForPushChoice = MutableStateFlow<Pair<CardBatchEntity, List<GeneratedCardPrintItem>>?>(null)
 
     val cardBatches: StateFlow<List<CardBatchEntity>> = _currentUser.flatMapLatest { user ->
         repository.getCardBatches(user?.id ?: "")
@@ -408,8 +414,36 @@ class TalalProViewModel(
     val isAssistantThinking = MutableStateFlow(false)
 
     init {
+        if (repository.isAllowGuestAccessCached() && repository.getSavedUserEmail().isNullOrBlank()) {
+            enterGuestMode(initialSilent = true)
+        }
         loadAppConfig()
         loadSavedSession()
+    }
+
+    fun enterGuestMode(initialSilent: Boolean = false) {
+        explicitSignOutRequested = false
+        val guestUser = FirebaseUserAccount(
+            id = "guest_local_user",
+            email = "guest@talalpro.local",
+            name = "مستخدم مباشر (بدون تسجيل)",
+            role = "user",
+            status = "active",
+            isActivated = true,
+            isLifetime = true,
+            maxRouters = 99,
+            maxDevices = 999
+        )
+        _currentUser.value = guestUser
+        _isAdmin.value = false
+        _isGuestModeActive.value = true
+        _isLoggedIn.value = true
+        showActivationScreen.value = false
+        pendingActivationUser.value = null
+        repository.setCurrentUserId(guestUser.id)
+        if (!initialSilent) {
+            refreshAll()
+        }
     }
 
     private fun loadSavedSession() {
@@ -422,6 +456,7 @@ class TalalProViewModel(
                     if (user != null) {
                         _currentUser.value = user
                         _isAdmin.value = user.role == "admin"
+                        _isGuestModeActive.value = false
                         repository.setCurrentUserId(user.id)
                         if (user.isActivated && isActivated && user.status == "active") {
                             _isLoggedIn.value = true
@@ -431,6 +466,10 @@ class TalalProViewModel(
                             pendingActivationUser.value = user
                             showActivationScreen.value = true
                         }
+                    }
+                } else if (_appConfig.value.allowGuestAccess || repository.isAllowGuestAccessCached()) {
+                    if (!explicitSignOutRequested) {
+                        enterGuestMode()
                     }
                 }
             } catch (_: Exception) {}
@@ -458,6 +497,8 @@ class TalalProViewModel(
             try {
                 val (user, err) = firebaseManager.authenticate(emailOrUser.trim(), pass)
                 if (user != null) {
+                    explicitSignOutRequested = false
+                    _isGuestModeActive.value = false
                     _currentUser.value = user
                     _isAdmin.value = user.role == "admin"
                     repository.setCurrentUserId(user.id)
@@ -558,6 +599,8 @@ class TalalProViewModel(
     }
 
     fun logout() {
+        explicitSignOutRequested = true
+        _isGuestModeActive.value = false
         _isLoggedIn.value = false
         _currentUser.value = null
         pendingActivationUser.value = null
@@ -607,7 +650,17 @@ class TalalProViewModel(
     fun loadAppConfig() {
         viewModelScope.launch {
             try {
-                _appConfig.value = firebaseManager.getAppConfig()
+                val cfg = firebaseManager.getAppConfig()
+                _appConfig.value = cfg
+                repository.saveAllowGuestAccessCached(cfg.allowGuestAccess)
+                if (cfg.allowGuestAccess && !_isLoggedIn.value && !explicitSignOutRequested && repository.getSavedUserEmail().isNullOrBlank()) {
+                    enterGuestMode()
+                } else if (!cfg.allowGuestAccess && _isGuestModeActive.value) {
+                    _isGuestModeActive.value = false
+                    _isLoggedIn.value = false
+                    _currentUser.value = null
+                    repository.setCurrentUserId("")
+                }
             } catch (_: Exception) {}
         }
     }
@@ -619,7 +672,8 @@ class TalalProViewModel(
                 val ok = firebaseManager.saveAppConfig(config)
                 if (ok) {
                     _appConfig.value = config
-                    snackbarMessage.value = "تم حفظ الإعدادات في السيرفر بنجاح"
+                    repository.saveAllowGuestAccessCached(config.allowGuestAccess)
+                    snackbarMessage.value = "تم حفظ الإعدادات في السيرفر بنجاح ✓"
                 } else {
                     snackbarMessage.value = "فشل حفظ الإعدادات"
                 }
@@ -2082,40 +2136,228 @@ class TalalProViewModel(
     }
 
     private suspend fun generateAssistantResponse(prompt: String, targetRouter: RouterEntity?): AssistantMessage {
-        val lower = prompt.lowercase()
-        val routerName = targetRouter?.name ?: "الراوتر الافتراضي"
+        val trimmed = prompt.trim()
+        val lower = trimmed.lowercase()
+        val router = targetRouter ?: allRouters.value.firstOrNull { it.isOnline } ?: allRouters.value.firstOrNull()
+        val routerName = router?.name ?: "لا يوجد راوتر"
 
-        // Check if user requested a router command
-        if (lower.contains("reboot") || lower.contains("اعادة تشغيل") || lower.contains("إعادة تشغيل")) {
-            if (targetRouter != null && _appConfig.value.aiPermissions.allowReboot) {
-                repository.rebootRouter(targetRouter)
+        // 1. Direct Arbitrary RouterOS CLI / API command execution (e.g. "/ip hotspot active print", "/interface disable ...", "/system reboot")
+        if (trimmed.startsWith("/")) {
+            if (router == null) {
                 return AssistantMessage(
                     sender = "assistant",
-                    content = "تم إرسال أمر إعادة تشغيل الراوتر [$routerName] بنجاح.",
+                    content = "يرجى إضافة أو اختيار راوتر MikroTik لتنفيذ الأمر:\n$trimmed"
+                )
+            }
+            val res = repository.executeArbitraryRouterCommand(router, trimmed)
+            return if (res.isSuccess) {
+                val formattedOutput = if (res.results.isEmpty()) {
+                    "✓ تم تنفيذ الأمر بنجاح بدون بيانات إضافية (ping: ${res.pingTimeMs}ms)."
+                } else {
+                    buildString {
+                        append("✓ النتائج (${res.results.size}) من [$routerName]:\n")
+                        res.results.take(25).forEachIndexed { idx, row ->
+                            append("${idx + 1}. ")
+                            append(row.entries.filter { it.key != ".id" }.take(6).joinToString(" | ") { "${it.key}=${it.value}" })
+                            append("\n")
+                        }
+                        if (res.results.size > 25) append("... و ${res.results.size - 25} سجل إضافي")
+                    }.trim()
+                }
+                AssistantMessage(
+                    sender = "assistant",
+                    content = "✅ تم تنفيذ أمر RouterOS على [$routerName] بكامل الصلاحيات.",
                     isRouterCommand = true,
-                    commandOutput = "/system reboot -> OK"
+                    commandOutput = formattedOutput
                 )
             } else {
-                return AssistantMessage(
+                AssistantMessage(
                     sender = "assistant",
-                    content = "يرجى تحديد راوتر من القائمة أعلاه أولاً، أو التأكد من تفعيل صلاحية إعادة التشغيل للمساعد في لوحة التحكم."
+                    content = "⚠️ تعذر تنفيذ الأمر على [$routerName]: ${res.errorMessage ?: "خطأ غير معروف"}",
+                    isRouterCommand = true,
+                    commandOutput = "CMD: $trimmed -> ERROR"
                 )
             }
         }
 
+        // 2. Active Connected Users Inspection ("فحص المتصلين الان" / "المتصلين")
+        if ((lower.contains("متصل") || lower.contains("active") || lower.contains("المشتركين")) &&
+            (lower.contains("فحص") || lower.contains("عرض") || lower.contains("جلب") || lower.contains("الان") || lower.contains("الآن") || lower.contains("check"))) {
+            if (router == null) {
+                return AssistantMessage(sender = "assistant", content = "لا يوجد راوتر متصل لفحص المتصلين الآن.")
+            }
+            val activeList = repository.loadDetailedActiveDevices(router)
+            val hsCount = activeList.count { it.type == "HOTSPOT" }
+            val umCount = activeList.count { it.type == "USER_MANAGER" }
+            val details = buildString {
+                append("👥 إجمالي المتصلين الآن: ${activeList.size} (هوتسبوت: $hsCount | يوزرمانجر: $umCount)\n")
+                activeList.take(15).forEachIndexed { idx, dev ->
+                    val typeTag = if (dev.type == "USER_MANAGER") "UM" else "HS"
+                    append("${idx + 1}. [$typeTag] ${dev.username} | ${dev.profile} | متبقي: ${dev.remainingQuota} | وقت: ${dev.remainingTime} | ${dev.deviceType}\n")
+                }
+                if (activeList.size > 15) append("... والمزيد (${activeList.size - 15})")
+            }.trim()
+            return AssistantMessage(
+                sender = "assistant",
+                content = "📡 تقرير فحص المتصلين الآن على [$routerName]:",
+                isRouterCommand = true,
+                commandOutput = details
+            )
+        }
+
+        // 3. Devices & Ports Inspection ("فحص الأجهزة والمنافذ")
+        if ((lower.contains("الأجهزة") || lower.contains("الاجهزة") || lower.contains("المنافذ") || lower.contains("ports") || lower.contains("ether")) &&
+            (lower.contains("فحص") || lower.contains("حالة") || lower.contains("عرض") || lower.contains("check"))) {
+            if (router == null) {
+                return AssistantMessage(sender = "assistant", content = "يرجى تحديد راوتر أولاً لفحص المنافذ والأجهزة.")
+            }
+            val ports = repository.getRouterPorts(router)
+            val units = repository.getDistributionUnits(router, allDevices.value)
+            val upPorts = ports.count { it.isRunning && !it.isDisabled }
+            val downPorts = ports.count { !it.isRunning || it.isDisabled }
+            val report = buildString {
+                append("🔌 المنافذ: الإجمالي ${ports.size} | نشط: $upPorts | متوقف: $downPorts\n")
+                ports.take(10).forEach { p ->
+                    val st = if (p.isDisabled) "معطل" else if (p.isRunning) "متصل (${p.speed})" else "غير متصل"
+                    val rxMb = p.rxBytes / (1024 * 1024)
+                    val txMb = p.txBytes / (1024 * 1024)
+                    append("• ${p.name}: $st | ↓${rxMb}MB ↑${txMb}MB | السرعة: ${p.bandwidthLimit}\n")
+                }
+                append("📡 أجهزة التوزيع والمجاورين المكتشفة: ${units.size}\n")
+                units.take(8).forEach { u ->
+                    append("• ${u.name} (${u.ip}) • ${u.type} • متصلين: ${u.connectedUsersCount}\n")
+                }
+            }.trim()
+            return AssistantMessage(
+                sender = "assistant",
+                content = "🔌 تقرير فحص الأجهزة والمنافذ الشامل لراوتر [$routerName]:",
+                isRouterCommand = true,
+                commandOutput = report
+            )
+        }
+
+        // 4. Router Power Controls: Shutdown & Reboot
+        if (lower.contains("إيقاف تشغيل") || lower.contains("ايقاف تشغيل") || lower.contains("اطفاء") || lower.contains("إطفاء") || lower.contains("shutdown")) {
+            if (router == null) {
+                return AssistantMessage(sender = "assistant", content = "يرجى تحديد الراوتر المراد إيقاف تشغيله أولاً.")
+            }
+            repository.shutdownRouter(router)
+            return AssistantMessage(
+                sender = "assistant",
+                content = "⚡ تم تنفيذ أمر إيقاف تشغيل الراوتر [$routerName] الكامل بنجاح.",
+                isRouterCommand = true,
+                commandOutput = "/system/shutdown -> SENT TO [$routerName]"
+            )
+        }
+
+        if (lower.contains("reboot") || lower.contains("اعادة تشغيل") || lower.contains("إعادة تشغيل") || lower.contains("رسترت")) {
+            if (router == null) {
+                return AssistantMessage(sender = "assistant", content = "يرجى تحديد الراوتر المراد إعادة تشغيله أولاً.")
+            }
+            repository.rebootRouter(router)
+            return AssistantMessage(
+                sender = "assistant",
+                content = "🔄 تم إرسال أمر إعادة تشغيل الراوتر [$routerName] بنجاح.",
+                isRouterCommand = true,
+                commandOutput = "/system/reboot -> OK"
+            )
+        }
+
+        // 5. Bluetooth Sharing Block (TTL=1)
+        if (lower.contains("بلوتوث") || lower.contains("ttl") || lower.contains("مشاركة")) {
+            if (router == null) return AssistantMessage(sender = "assistant", content = "يرجى اختيار راوتر أولاً.")
+            val enable = !(lower.contains("الغاء") || lower.contains("إلغاء") || lower.contains("فك") || lower.contains("تعطيل") || lower.contains("ايقاف منع"))
+            val res = repository.toggleBluetoothSharingBlock(router, enable)
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (res.isSuccess) {
+                    if (enable) "🛡️ تم تفعيل قاعدة منع مشاركة الإنترنت بالبلوتوث والهوتسبوت (TTL=1) على [$routerName] ✓"
+                    else "🔓 تم إلغاء قاعدة منع مشاركة الإنترنت (TTL=1) على [$routerName] ✓"
+                } else "⚠️ فشل تنفيذ العملية: ${res.errorMessage}",
+                isRouterCommand = true,
+                commandOutput = "/ip/firewall/mangle -> TTL=1 (${if (enable) "ENABLED" else "REMOVED"})"
+            )
+        }
+
+        // 6. Free Network Mode Toggle
+        if (lower.contains("شبكة مجان") || lower.contains("الشبكة مجان") || lower.contains("مجاناً") || lower.contains("مجانا")) {
+            if (router == null) return AssistantMessage(sender = "assistant", content = "يرجى اختيار راوتر أولاً.")
+            val enableFree = !(lower.contains("ايقاف") || lower.contains("إيقاف") || lower.contains("الغاء") || lower.contains("إلغاء") || lower.contains("تعطيل"))
+            val res = repository.toggleFreeNetworkMode(router, enableFree)
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (res.isSuccess) {
+                    if (enableFree) "🌐 تم فتح الشبكة مجاناً (تعطيل بوابة الكروت مؤقتاً) على [$routerName]."
+                    else "🔐 تم إعادة تفعيل تسجيل الدخول بالكروت على [$routerName]."
+                } else "⚠️ ${res.errorMessage}",
+                isRouterCommand = true,
+                commandOutput = "/ip/hotspot set disabled=${if (enableFree) "yes" else "no"}"
+            )
+        }
+
+        // 7. In-App Sound & Background Controls
+        if (lower.contains("الصوت") && (lower.contains("ايقاف") || lower.contains("إيقاف") || lower.contains("تشغيل") || lower.contains("تفعيل"))) {
+            val enable = lower.contains("تشغيل") || lower.contains("تفعيل")
+            repository.toggleSound(enable)
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (enable) "🔊 تم تشغيل المؤثرات الصوتية في التطبيق." else "🔇 تم إيقاف المؤثرات الصوتية في التطبيق.",
+                isRouterCommand = true,
+                commandOutput = "APP_SOUND_EFFECTS = ${if (enable) "ON" else "OFF"}"
+            )
+        }
+
+        if ((lower.contains("dns") || lower.contains("كاش") || lower.contains("تنظيف")) && router != null) {
+            val res = repository.executeArbitraryRouterCommand(router, "/ip dns cache flush")
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (res.isSuccess) "🧹 تم تنظيف وتفريغ كاش DNS على [$routerName] بنجاح ✓" else "⚠️ ${res.errorMessage}",
+                isRouterCommand = true,
+                commandOutput = "/ip/dns/cache/flush -> DONE"
+            )
+        }
+
+        if ((lower.contains("نسخة") || lower.contains("باك اب") || lower.contains("backup")) && router != null) {
+            val name = "TalalPro_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.ENGLISH).format(Date())}"
+            val res = repository.executeArbitraryRouterCommand(router, "/system backup save name=$name")
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (res.isSuccess) "💾 تم حفظ نسخة احتياطية باسم [$name] على [$routerName] ✓" else "⚠️ ${res.errorMessage}",
+                isRouterCommand = true,
+                commandOutput = "/system/backup/save =name=$name"
+            )
+        }
+
+        // 8. Port Disable / Enable in Natural Language (e.g., "إيقاف المنفذ ether2" / "تشغيل ether3")
+        val portMatch = Regex("""(ether\d+|sfp\S*|wlan\d+|bridge\S*)""", RegexOption.IGNORE_CASE).find(trimmed)
+        if (portMatch != null && router != null && (lower.contains("منفذ") || lower.contains("ايقاف") || lower.contains("إيقاف") || lower.contains("تشغيل") || lower.contains("تعطيل"))) {
+            val portName = portMatch.groupValues[1]
+            val enablePort = lower.contains("تشغيل") || lower.contains("تفعيل")
+            val cmd = if (enablePort) "/interface enable numbers=$portName" else "/interface disable numbers=$portName"
+            val res = repository.executeArbitraryRouterCommand(router, cmd)
+            return AssistantMessage(
+                sender = "assistant",
+                content = if (res.isSuccess) "🔌 تم ${if (enablePort) "تشغيل" else "إيقاف"} المنفذ [$portName] في [$routerName] بنجاح." else "⚠️ ${res.errorMessage}",
+                isRouterCommand = true,
+                commandOutput = "$cmd -> ${if (res.isSuccess) "OK" else "FAILED"}"
+            )
+        }
+
+        // 9. Cloud DDNS
         if (lower.contains("cloud") || lower.contains("كلاود") || lower.contains("تفعيل الكلاود")) {
-            if (targetRouter != null && _appConfig.value.aiPermissions.allowRouterCommands) {
-                val res = repository.enableRouterCloudDdns(targetRouter)
+            if (router != null) {
+                val res = repository.enableRouterCloudDdns(router)
                 val dns = res.results.firstOrNull()?.get("dns-name") ?: "جاري التحديث"
                 return AssistantMessage(
                     sender = "assistant",
                     content = "تم تفعيل خدمة IP Cloud بنجاح للراوتر [$routerName]!\nعنوان الكلاود: $dns",
                     isRouterCommand = true,
-                    commandOutput = "/ip cloud set ddns-enabled=yes -> SUCCESS"
+                    commandOutput = "/ip cloud set ddns-enabled=yes -> SUCCESS ($dns)"
                 )
             }
         }
 
+        // 10. Network Health Check
         if (lower.contains("فحص") || lower.contains("check") || lower.contains("حالة")) {
             val onlineCount = allRouters.value.count { it.isOnline }
             val offlineCount = allRouters.value.count { !it.isOnline }
@@ -2125,7 +2367,7 @@ class TalalProViewModel(
             return AssistantMessage(
                 sender = "assistant",
                 content = """
-                    📊 <b>تقرير فحص الشبكة الشامل:</b>
+                    📊 تقرير فحص الشبكة الشامل:
                     - الراوترات المتصلة: $onlineCount من إجمالي ${allRouters.value.size}
                     - الراوترات المنقطعة: $offlineCount
                     - أجهزة الشبكة والأبراج النشطة: $devOnline
@@ -2138,7 +2380,15 @@ class TalalProViewModel(
 
         return AssistantMessage(
             sender = "assistant",
-            content = "تم استلام استفسارك: \"$prompt\"\nبناءً على تحليل بيانات المنظومة، الراوتر [$routerName] بحالة مستقرة. يمكنك طلب أوامر مثل: 'فحص الشبكة'، 'تفعيل الكلاود'، 'إعادة تشغيل الراوتر'، أو استعراض مستخدمي الهوتسبوت واليوزرمانجر."
+            content = """
+                أنا المساعد الشامل بكامل الصلاحيات لـ [$routerName]. يمكنك إرسال:
+                • أي أمر MikroTik مباشر يبدأ بـ ( / ) مثل: /ip hotspot active print أو /interface disable numbers=ether2
+                • فحص المتصلين الآن (يعرض رصيد الميجا والوقت ونوع الكرت)
+                • فحص الأجهزة والمنافذ
+                • تشغيل/إيقاف منفذ (مثل: إيقاف ether3)
+                • منع مشاركة البلوتوث TTL=1 / الشبكة مجاناً / تفعيل الكلاود
+                • نسخة احتياطية / تنظيف DNS / إعادة تشغيل أو إيقاف الراوتر / تشغيل وإيقاف الصوت
+            """.trimIndent()
         )
     }
 
@@ -3083,6 +3333,65 @@ class TalalProViewModel(
         return unique.toList()
     }
 
+    fun dismissBatchPushChoice() {
+        pendingBatchForPushChoice.value = null
+    }
+
+    fun pushBatchToTargetServer(
+        router: RouterEntity?,
+        batch: CardBatchEntity,
+        targetServerType: String,
+        targetProfile: String? = null
+    ) {
+        val targetRouter = router ?: allRouters.value.firstOrNull { it.id == batch.routerId }
+            ?: allRouters.value.firstOrNull { it.isOnline } ?: allRouters.value.firstOrNull()
+        if (targetRouter == null) {
+            snackbarMessage.value = "يرجى إضافة أو اختيار راوتر متصل لإضافة الكروت إلى السيرفر"
+            return
+        }
+        val effectiveProfile = targetProfile?.takeIf { it.isNotBlank() } ?: batch.profileName.ifBlank { "default" }
+        viewModelScope.launch {
+            isProcessingBatch.value = true
+            try {
+                val items = repository.getBatchItemsSync(batch.id)
+                val pairs = items.map { it.username to it.password }
+                val (added, err) = repository.addBatchCardsToRouter(
+                    router = targetRouter,
+                    serverType = targetServerType,
+                    cards = pairs,
+                    profile = effectiveProfile,
+                    comment = "Batch:${batch.batchCode}"
+                )
+                if (added > 0) {
+                    repository.updateCardBatch(
+                        batch.copy(
+                            routerId = targetRouter.id,
+                            routerName = targetRouter.name,
+                            serverType = targetServerType,
+                            profileName = effectiveProfile,
+                            isSyncedToRouter = true
+                        )
+                    )
+                    if (effectiveProfile != batch.profileName) {
+                        repository.updateBatchItemsProfile(batch.id, effectiveProfile)
+                    }
+                    if (targetServerType.equals("USER_MANAGER", ignoreCase = true)) {
+                        repository.syncUserManager(targetRouter)
+                    } else {
+                        repository.syncHotspot(targetRouter)
+                    }
+                    pendingBatchForPushChoice.value = null
+                    val srvAr = if (targetServerType == "USER_MANAGER") "اليوزرمانجر" else "الهوتسبوت"
+                    snackbarMessage.value = "تم إضافة $added كرت إلى سيرفر $srvAr [${targetRouter.name}] ✓"
+                } else {
+                    snackbarMessage.value = "تعذر إضافة الكروت للسيرفر: ${err ?: "تأكد من الاتصال والصلاحيات"}"
+                }
+            } finally {
+                isProcessingBatch.value = false
+            }
+        }
+    }
+
     fun createCardBatch(
         router: RouterEntity?,
         serverType: String,
@@ -3094,6 +3403,8 @@ class TalalProViewModel(
         prefix: String,
         excludeSimilar: Boolean,
         template: CardTemplateEntity,
+        autoPushToServer: Boolean = false,
+        showPostGenerationOptions: Boolean = true,
         onBatchReadyForPrint: ((CardBatchEntity, List<GeneratedCardPrintItem>) -> Unit)? = null
     ) {
         val safeProfile = profileName.ifBlank { "default" }
@@ -3116,7 +3427,7 @@ class TalalProViewModel(
 
                 var syncedToRouter = false
                 var routerNote: String? = null
-                if (router != null) {
+                if (autoPushToServer && router != null) {
                     val (addedCount, errMsg) = repository.addBatchCardsToRouter(
                         router = router,
                         serverType = serverType,
@@ -3186,10 +3497,15 @@ class TalalProViewModel(
                         lastGeneratedHotspotBatch.value = printItems
                         repository.syncHotspot(router)
                     }
-                    snackbarMessage.value = "تم إنشاء دفعة [$batchCode] (${codes.size} كرت) في الراوتر بنجاح ✓"
+                    snackbarMessage.value = "تم توليد ورفع دفعة [$batchCode] (${codes.size} كرت) إلى السيرفر ✓"
+                } else if (autoPushToServer && routerNote != null) {
+                    snackbarMessage.value = "تم حفظ الدفعة [$batchCode] محلياً — اختر السيرفر للرفع لاحقاً ($routerNote)"
                 } else {
-                    val reason = routerNote?.let { " ($it)" } ?: ""
-                    snackbarMessage.value = "تم حفظ الدفعة [$batchCode] (${codes.size} كرت) للطباعة — بانتظار الرفع للراوتر$reason"
+                    snackbarMessage.value = "تم توليد الدفعة [$batchCode] (${codes.size} كرت) — اختر الإجراء المطلوب الآن ✓"
+                }
+
+                if (showPostGenerationOptions && !syncedToRouter) {
+                    pendingBatchForPushChoice.value = Pair(savedBatch, printItems)
                 }
 
                 onBatchReadyForPrint?.invoke(savedBatch, printItems)
@@ -3290,6 +3606,7 @@ class TalalProViewModel(
                     snackbarMessage.value = "تم حفظ الدفعة محلياً ولكن تعذر الرفع للراوتر: $errNote"
                 } else {
                     snackbarMessage.value = "تم استيراد دفعة [$batchCode] (${importedPairs.size} كرت) بنجاح ✓"
+                    pendingBatchForPushChoice.value = Pair(savedBatch, printItems)
                 }
 
                 onImportedForPrint?.invoke(savedBatch, printItems)
@@ -3300,37 +3617,156 @@ class TalalProViewModel(
     }
 
     fun syncDraftBatchToRouter(router: RouterEntity?, batch: CardBatchEntity) {
-        if (router == null) {
-            snackbarMessage.value = "يرجى اختيار راوتر متصل لرفع الدفعة"
+        pushBatchToTargetServer(router, batch, batch.serverType)
+    }
+
+    // ================= ROUTER POWER, PACKAGE MANAGEMENT & SPECIAL TOOLS =================
+
+    fun shutdownRouter(router: RouterEntity) {
+        viewModelScope.launch {
+            val res = repository.shutdownRouter(router)
+            snackbarMessage.value = if (res.isSuccess) {
+                "⚡ تم إرسال أمر إيقاف تشغيل الراوتر [${router.name}] الكامل"
+            } else {
+                "⚠️ تعذر إيقاف الراوتر: ${res.errorMessage}"
+            }
+        }
+    }
+
+    fun addUserManagerPackage(
+        router: RouterEntity?,
+        name: String,
+        validity: String,
+        price: String,
+        rateLimit: String,
+        sharedUsers: Int
+    ) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.addUserManagerProfileFull(target, name, validity, price, rateLimit, sharedUsers)
+            snackbarMessage.value = if (res.isSuccess) "✓ تم إضافة باقة اليوزرمانجر [$name]" else "⚠️ ${res.errorMessage ?: "تعذر الإضافة"}"
+        }
+    }
+
+    fun editUserManagerPackage(
+        router: RouterEntity?,
+        oldName: String,
+        newName: String,
+        validity: String,
+        price: String,
+        sharedUsers: Int
+    ) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.editUserManagerProfile(target, oldName, newName, validity, price, sharedUsers)
+            snackbarMessage.value = if (res.isSuccess) "✓ تم تعديل باقة اليوزرمانجر [$newName]" else "⚠️ ${res.errorMessage ?: "تعذر التعديل"}"
+        }
+    }
+
+    fun deleteUserManagerPackage(router: RouterEntity?, profileName: String) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.deleteUserManagerProfile(target, profileName)
+            snackbarMessage.value = if (res.isSuccess) "🗑️ تم حذف الباقة [$profileName]" else "⚠️ ${res.errorMessage ?: "تعذر الحذف"}"
+        }
+    }
+
+    fun addHotspotPackage(
+        router: RouterEntity?,
+        name: String,
+        rateLimit: String,
+        sharedUsers: Int,
+        sessionTimeout: String
+    ) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.addHotspotProfile(target, name, rateLimit, sharedUsers, sessionTimeout)
+            snackbarMessage.value = if (res.isSuccess) "✓ تم إضافة باقة الهوتسبوت [$name]" else "⚠️ ${res.errorMessage ?: "تعذر الإضافة"}"
+        }
+    }
+
+    fun editHotspotPackage(
+        router: RouterEntity?,
+        oldName: String,
+        newName: String,
+        rateLimit: String,
+        sharedUsers: Int,
+        sessionTimeout: String
+    ) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.editHotspotProfile(target, oldName, newName, rateLimit, sharedUsers, sessionTimeout)
+            snackbarMessage.value = if (res.isSuccess) "✓ تم تعديل باقة الهوتسبوت [$newName]" else "⚠️ ${res.errorMessage ?: "تعذر التعديل"}"
+        }
+    }
+
+    fun deleteHotspotPackage(router: RouterEntity?, profileName: String) {
+        val target = router ?: allRouters.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            val res = repository.deleteHotspotProfile(target, profileName)
+            snackbarMessage.value = if (res.isSuccess) "🗑️ تم حذف باقة الهوتسبوت [$profileName]" else "⚠️ ${res.errorMessage ?: "تعذر الحذف"}"
+        }
+    }
+
+    fun toggleBluetoothSharingBlock(router: RouterEntity?, enableBlock: Boolean) {
+        val target = router ?: allRouters.value.firstOrNull()
+        if (target == null) {
+            snackbarMessage.value = "يرجى إضافة أو اختيار راوتر أولاً"
             return
         }
         viewModelScope.launch {
-            isProcessingBatch.value = true
-            try {
-                val items = repository.getBatchItemsSync(batch.id)
-                val pairs = items.map { it.username to it.password }
-                val (added, err) = repository.addBatchCardsToRouter(
-                    router = router,
-                    serverType = batch.serverType,
-                    cards = pairs,
-                    profile = batch.profileName,
-                    comment = "Batch:${batch.batchCode}"
-                )
-                if (added > 0) {
-                    repository.updateCardBatch(
-                        batch.copy(
-                            routerId = router.id,
-                            routerName = router.name,
-                            isSyncedToRouter = true
-                        )
-                    )
-                    snackbarMessage.value = "تم رفع $added كرت من الدفعة [${batch.batchCode}] إلى [${router.name}] ✓"
-                } else {
-                    snackbarMessage.value = "فشل رفع الدفعة للراوتر: ${err ?: "تحقق من الاتصال"}"
-                }
-            } finally {
-                isProcessingBatch.value = false
+            val res = repository.toggleBluetoothSharingBlock(target, enableBlock)
+            snackbarMessage.value = if (res.isSuccess) {
+                if (enableBlock) "🛡️ تم تفعيل منع مشاركة البلوتوث (TTL=1) على [${target.name}]"
+                else "🔓 تم إلغاء منع مشاركة البلوتوث على [${target.name}]"
+            } else {
+                "⚠️ ${res.errorMessage ?: "تعذر تنفيذ الأمر"}"
             }
+        }
+    }
+
+    fun toggleFreeNetworkMode(router: RouterEntity?, enableFree: Boolean) {
+        val target = router ?: allRouters.value.firstOrNull()
+        if (target == null) {
+            snackbarMessage.value = "يرجى إضافة أو اختيار راوتر أولاً"
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.toggleFreeNetworkMode(target, enableFree)
+            snackbarMessage.value = if (res.isSuccess) {
+                if (enableFree) "🌐 تم فتح الشبكة مجاناً بدون كروت على [${target.name}]"
+                else "🔐 تم إغلاق الوضع المجاني وإعادة بوابة الكروت على [${target.name}]"
+            } else {
+                "⚠️ ${res.errorMessage ?: "تعذر التنفيذ"}"
+            }
+        }
+    }
+
+    fun setHotspotHtmlDirectory(router: RouterEntity?, htmlDir: String) {
+        val target = router ?: allRouters.value.firstOrNull()
+        if (target == null) {
+            snackbarMessage.value = "يرجى اختيار راوتر أولاً"
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.setHotspotHtmlDirectory(target, htmlDir)
+            snackbarMessage.value = if (res.isSuccess) {
+                "📁 تم تغيير مجلد HTML إلى [$htmlDir] في [${target.name}] ✓"
+            } else {
+                "⚠️ ${res.errorMessage ?: "تعذر التعديل"}"
+            }
+        }
+    }
+
+    fun executeSpecialToolCommand(router: RouterEntity?, rawCommand: String, onComplete: (MikroTikResponse) -> Unit) {
+        val target = router ?: allRouters.value.firstOrNull()
+        if (target == null) {
+            onComplete(MikroTikResponse(isSuccess = false, errorMessage = "يرجى اختيار راوتر أولاً"))
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.executeArbitraryRouterCommand(target, rawCommand)
+            onComplete(res)
         }
     }
 
